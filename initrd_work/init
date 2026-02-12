@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# Create and mount essential filesystems
+/bin/mount -t proc proc /proc 2>/dev/null || true
+/bin/mount -t sysfs sysfs /sys 2>/dev/null || true
+/bin/mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+# Suppress kernel messages on console
+echo 0 > /proc/sys/kernel/printk 2>/dev/null || true
+
+# Clear screen
+/bin/clear 2>/dev/null || true
+
+# ============================================
+#  Display the custom message
+# ============================================
+echo ""
+echo "============================================"
+echo ""
+echo "   Hello, I am a Custom ISO"
+echo ""
+echo "============================================"
+echo ""
+echo "  Booted successfully!"
+echo "  Type commands below or press Ctrl+Alt+Del"
+echo "  to reboot."
+echo ""
+
+# Drop to interactive shell with job control
+exec /bin/sh +m
