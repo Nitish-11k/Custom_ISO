@@ -6,6 +6,15 @@ import os
 import threading
 import time
 import re
+import traceback
+
+# --- Global Crash Handler ---
+def handle_exception(exc_type, exc_value, exc_traceback):
+    with open("/tmp/dashboard_crash.log", "w") as f:
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+sys.excepthook = handle_exception
 
 # --- Helper Functions ---
 
@@ -33,7 +42,20 @@ def get_interfaces():
 
 WIRED_IFACE, WIFI_IFACE = get_interfaces()
 
+# Shared data for thread-safe UI updates
+monitor_data = {
+    "net_connected": False,
+    "net_ip": "No IP",
+    "storage_used": 0,
+    "storage_desc": "Checking...",
+    "peripherals": "Checking..."
+}
+
 # --- Dashboard Application ---
+
+# Font names that always exist in Tk
+FONT_DEFAULT = "TkDefaultFont"
+FONT_FIXED = "TkFixedFont"
 
 class DashboardApp(tk.Tk):
     def __init__(self):
@@ -56,7 +78,7 @@ class DashboardApp(tk.Tk):
         style.configure("Sidebar.TFrame", background='#0c1013')
         style.configure("Card.TFrame", background='#2f3640', relief="flat")
         
-        style.configure("TLabel", background='#2f3640', foreground='white', font=("Helvetica", 12))
+        style.configure("TLabel", background='#2f3640', foreground='white')
         
         # Main Layout
         self.columnconfigure(1, weight=1)
@@ -67,21 +89,21 @@ class DashboardApp(tk.Tk):
         sidebar.grid(row=0, column=0, sticky="ns")
         sidebar.pack_propagate(False)
         
-        lbl_title = tk.Label(sidebar, text="DASHBOARD", bg='#0c1013', fg='#0abde3', font=("Helvetica", 20, "bold"))
+        lbl_title = tk.Label(sidebar, text="DASHBOARD", bg='#0c1013', fg='#0abde3', font=(FONT_DEFAULT, 18, "bold"))
         lbl_title.pack(pady=40)
         
-        self.sidebar_net = tk.Label(sidebar, text="Network: ...", bg='#0c1013', fg='#bdc3c7', font=("Helvetica", 12))
+        self.sidebar_net = tk.Label(sidebar, text="Network: ...", bg='#0c1013', fg='#bdc3c7')
         self.sidebar_net.pack(pady=10)
         
-        btn_exit = tk.Button(sidebar, text="Exit / Shutdown", command=self.destroy,
-                             bg='#e74c3c', fg='white', relief='flat', font=("Helvetica", 12), cursor='hand2')
+        btn_exit = tk.Button(sidebar, text="Power / Exit", command=self.show_shutdown_menu,
+                             bg='#e74c3c', fg='white', relief='flat', cursor='hand2')
         btn_exit.pack(side="bottom", fill="x", padx=20, pady=20)
         
         # --- Content Area ---
         content = ttk.Frame(self, style="TFrame")
         content.grid(row=0, column=1, sticky="nsew", padx=40, pady=40)
         
-        tk.Label(content, text="System Overview", bg='#1e272e', fg='white', font=("Helvetica", 28)).pack(anchor="w", pady=(0, 30))
+        tk.Label(content, text="System Overview", bg='#1e272e', fg='white', font=(FONT_DEFAULT, 22, "bold")).pack(anchor="w", pady=(0, 30))
         
         # Grid for Modules
         self.modules_frame = ttk.Frame(content, style="TFrame")
@@ -97,8 +119,77 @@ class DashboardApp(tk.Tk):
         self.running = True
         threading.Thread(target=self.monitor_loop, daemon=True).start()
         
+        # Start UI Update Loop (Thread-safe)
+        self.after(500, self.update_ui_loop)
+        
         self.focus_force()
         self.bind("<Escape>", lambda e: self.destroy())
+        
+        # Force update to render GUI
+        self.update()
+        
+        # Force update to render GUI
+        self.update()
+        
+        # FAILSAFE: Don't block on wait_visibility as it might hang on some X servers
+        # Instead, just wait a secure amount of time then kill splash
+        self.after(1000, self.kill_splash_screen)
+
+    # --- KILL SPLASH SCREEN AFTER UI LOAD ---
+    def kill_splash_screen(self):
+        print("Stopping splash screen...")
+        # 1. Signal the renderer to wipe and exit
+        try:
+            with open("/tmp/splash.stop", "w") as f:
+                f.write("stop")
+            # Permission check - ensure everyone can see it
+            os.chmod("/tmp/splash.stop", 0o666)
+        except:
+            pass
+
+        # 2. Short wait for renderer to see file and wipe
+        self.after(300, self._force_cleanup_splash)
+
+    def _force_cleanup_splash(self):
+        # Failsafe: Force kill if it's still running
+        run_sudo("pkill -TERM tiny_splash")
+        # Ensure we cover any terminal artifacts
+        self.update_idletasks()
+
+    def show_shutdown_menu(self):
+        menu = tk.Toplevel(self)
+        menu.title("Power Options")
+        # Modal-like behavior
+        menu.transient(self)
+        menu.grab_set()
+        
+        # Center the menu
+        mw, mh = 400, 300
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        menu.geometry(f"{mw}x{mh}+{(sw-mw)//2}+{(sh-mh)//2}")
+        menu.configure(bg='#2f3640')
+        menu.overrideredirect(True) # No window borders
+
+        tk.Label(menu, text="Power Options", bg='#2f3640', fg='white', font=(FONT_DEFAULT, 16, "bold")).pack(pady=20)
+
+        btns_spec = [
+            ("Shutdown", "#e74c3c", lambda: self.safe_power_action("poweroff")),
+            ("Reboot", "#f39c12", lambda: self.safe_power_action("reboot")),
+            ("Exit to Shell", "#7f8c8d", self.destroy),
+            ("Cancel", "#34495e", menu.destroy)
+        ]
+
+        for text, color, cmd in btns_spec:
+            tk.Button(menu, text=text, command=cmd, bg=color, fg='white',
+                      relief='flat', width=20, pady=5).pack(pady=5)
+
+    def safe_power_action(self, action):
+        # 1. Hide the main window immediately
+        self.withdraw()
+        # 2. Start the splash renderer to cover the screen (persistent mode)
+        run_sudo("/sbin/tiny_splash shutdown &")
+        # 3. Trigger system action
+        run_sudo(action)
 
     def create_card(self, row, col, title):
         card = ttk.Frame(self.modules_frame, style="Card.TFrame", padding=20)
@@ -106,19 +197,19 @@ class DashboardApp(tk.Tk):
         self.modules_frame.columnconfigure(col, weight=1)
         self.modules_frame.rowconfigure(row, weight=1)
         
-        tk.Label(card, text=title, bg='#2f3640', fg='#48dbfb', font=("Helvetica", 16, "bold")).pack(anchor="w", pady=(0, 15))
+        tk.Label(card, text=title, bg='#2f3640', fg='#48dbfb', font=(FONT_DEFAULT, 14, "bold")).pack(anchor="w", pady=(0, 15))
         return card
 
     def create_network_card(self, r, c):
         card = self.create_card(r, c, "LAN Status")
         
-        self.lbl_net_status = tk.Label(card, text="Checking...", bg='#2f3640', fg='white', font=("Helvetica", 14))
+        self.lbl_net_status = tk.Label(card, text="Checking...", bg='#2f3640', fg='white')
         self.lbl_net_status.pack(anchor="w")
         
         self.lbl_ip = tk.Label(card, text="IP: --", bg='#2f3640', fg='#8395a7')
         self.lbl_ip.pack(anchor="w", pady=5)
         
-        self.lbl_details = tk.Label(card, text=f"({WIRED_IFACE})", bg='#2f3640', fg='#57606f', font=("Helvetica", 10))
+        self.lbl_details = tk.Label(card, text=f"({WIRED_IFACE})", bg='#2f3640', fg='#57606f')
         self.lbl_details.pack(anchor="w")
         
         tk.Button(card, text="Renew DHCP (Debug)", command=self.renew_dhcp,
@@ -137,7 +228,7 @@ class DashboardApp(tk.Tk):
         list_frame = tk.Frame(card, bg='#2f3640')
         list_frame.pack(fill="both", expand=True)
         
-        self.wifi_list = Listbox(list_frame, bg='#1e272e', fg='white', borderwidth=0, highlightthickness=0, font=("Courier", 11))
+        self.wifi_list = Listbox(list_frame, bg='#1e272e', fg='white', borderwidth=0, highlightthickness=0, font=(FONT_FIXED,))
         self.wifi_list.pack(side="left", fill="both", expand=True)
         
         scrollbar = Scrollbar(list_frame, orient="vertical", command=self.wifi_list.yview)
@@ -156,7 +247,7 @@ class DashboardApp(tk.Tk):
         card = self.create_card(r, c, "Tools & Checks")
         
         tk.Button(card, text="Test Connectivity (keva.agency)", command=self.check_url,
-                  bg='#f39c12', fg='white', font=("Helvetica", 12), relief='flat').pack(fill="x", pady=10)
+                  bg='#f39c12', fg='white', relief='flat').pack(fill="x", pady=10)
         
         self.lbl_url_status = tk.Label(card, text="", bg='#2f3640', fg='white')
         self.lbl_url_status.pack(pady=5)
@@ -164,17 +255,35 @@ class DashboardApp(tk.Tk):
         self.lbl_periph = tk.Label(card, text="...", bg='#2f3640', fg='#95a5a6')
         self.lbl_periph.pack(anchor="w", pady=10)
         
+    def update_ui_loop(self):
+        if not self.running: return
+        
+        # Pull data from shared monitor_data dict
+        net_text = "Connected" if monitor_data["net_connected"] else "Disconnected"
+        net_color = "#1dd1a1" if monitor_data["net_connected"] else "#ff6b6b"
+        
+        self.lbl_net_status.config(text=f"● {net_text}", fg=net_color)
+        self.lbl_ip.config(text=f"IP: {monitor_data['net_ip']}")
+        self.sidebar_net.config(text=f"Net: {net_text}", fg=net_color)
+        
+        self.progress_storage['value'] = monitor_data["storage_used"]
+        self.lbl_storage.config(text=monitor_data["storage_desc"])
+        self.lbl_periph.config(text=monitor_data["peripherals"])
+        
+        # Re-schedule
+        self.after(2000, self.update_ui_loop)
+
     def monitor_loop(self):
         while self.running:
             try:
-                self.update_network()
-                self.update_storage()
-                self.update_peripherals()
+                self.gather_network_info()
+                self.gather_storage_info()
+                self.gather_peripheral_info()
             except Exception as e:
-                print(e)
+                print(f"Monitor error: {e}")
             time.sleep(2)
 
-    def update_network(self):
+    def gather_network_info(self):
         connected = False
         try:
             subprocess.check_call(["ping", "-c", "1", "-W", "1", "8.8.8.8"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -182,36 +291,32 @@ class DashboardApp(tk.Tk):
         except:
             connected = False
             
-        ip = run_cmd(f"ip -4 addr show {WIRED_IFACE} | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' || echo ''")
+        # Busybox compatible IP extraction (sed instead of grep -P)
+        ip = run_cmd(f"ip -4 addr show {WIRED_IFACE} | sed -n 's/.*inet \\([0-9.]*\\).*/\\1/p'")
         if not ip and WIFI_IFACE:
-            ip = run_cmd(f"ip -4 addr show {WIFI_IFACE} | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' || echo ''")
-        if not ip: ip = "No IP"
-
-        color = "#1dd1a1" if connected else "#ff6b6b"
-        text = "Connected" if connected else "Disconnected"
+            ip = run_cmd(f"ip -4 addr show {WIFI_IFACE} | sed -n 's/.*inet \\([0-9.]*\\).*/\\1/p'")
         
-        self.lbl_net_status.config(text=f"● {text}", fg=color)
-        self.lbl_ip.config(text=f"IP: {ip}")
-        self.sidebar_net.config(text=f"Net: {text}", fg=color)
+        monitor_data["net_connected"] = connected
+        monitor_data["net_ip"] = ip if ip else "No IP"
 
-    def update_storage(self):
+    def gather_storage_info(self):
         try:
-            output = run_cmd("df / | tail -1")
+            output = run_cmd("df / | tail -n 1")
             parts = output.split()
             if len(parts) >= 5:
-                used_p = int(parts[4].replace('%', ''))
+                used_str = parts[4].replace('%', '')
+                used_p = int(used_str)
                 avail = parts[3]
-                self.progress_storage['value'] = used_p
-                self.lbl_storage.config(text=f"Used: {used_p}%  (Avail: {int(avail)//1024} MB)")
+                monitor_data["storage_used"] = used_p
+                monitor_data["storage_desc"] = f"Used: {used_p}%  (Avail: {int(avail)//1024} MB)"
         except:
             pass
 
-    def update_peripherals(self):
+    def gather_peripheral_info(self):
         devices = run_cmd("cat /proc/bus/input/devices")
         has_kbd = "Handlers=kbd" in devices or "Keyboard" in devices
         has_mouse = "Handlers=mouse" in devices or "Mouse" in devices
-        status = f"Keyboard: {'YES' if has_kbd else 'NO'} | Mouse: {'YES' if has_mouse else 'NO'}"
-        self.lbl_periph.config(text=status)
+        monitor_data["peripherals"] = f"Keyboard: {'YES' if has_kbd else 'NO'} | Mouse: {'YES' if has_mouse else 'NO'}"
 
     def renew_dhcp(self):
         def _task():
@@ -220,7 +325,7 @@ class DashboardApp(tk.Tk):
                 cmd = f"sudo udhcpc -f -n -i {WIRED_IFACE}" # Foreground, run once
                 output = run_cmd(cmd)
                 messagebox.showinfo("DHCP Result", f"Command: {cmd}\n\nOutput:\n{output}")
-                self.update_network()
+                self.gather_network_info()
             except Exception as e:
                 messagebox.showerror("DHCP Error", str(e))
         threading.Thread(target=_task).start()
@@ -332,5 +437,27 @@ class DashboardApp(tk.Tk):
         threading.Thread(target=_check).start()
 
 if __name__ == "__main__":
-    app = DashboardApp()
-    app.mainloop()
+    try:
+        app = DashboardApp()
+        app.mainloop()
+    except Exception as e:
+        # CRASH TRAP: Show error visually so user can see what went wrong
+        err_msg = traceback.format_exc()
+        with open("/tmp/dashboard_fatal.log", "w") as f:
+            f.write(err_msg)
+        print(f"DASHBOARD FATAL ERROR:\n{err_msg}")
+        os.system("sudo pkill -9 tiny_splash")
+        os.system("sudo killall -9 tiny_splash")
+        # Try to show a visible error window
+        try:
+            root = tk.Tk()
+            root.title("Dashboard Error")
+            root.configure(bg='#1e272e')
+            root.geometry("800x400")
+            tk.Label(root, text="Dashboard Failed to Start", bg='#1e272e', fg='#e74c3c', font=('TkDefaultFont', 16, 'bold')).pack(pady=20)
+            txt = tk.Text(root, bg='#2f3640', fg='white', wrap='word')
+            txt.insert('1.0', err_msg)
+            txt.pack(fill='both', expand=True, padx=20, pady=10)
+            root.mainloop()
+        except:
+            pass

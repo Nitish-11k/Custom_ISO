@@ -1,7 +1,12 @@
 #!/bin/sh
 #
-# remaster_tc.sh - Creates initramfs and prepares CDE folder for Tiny Core
+# remaster_tc.sh - D-Secure Edition (DIRECT MOUNT STRATEGY)
 #
+# ROOT CAUSE: tce-load is too slow (2-3 min for 127 packages via CDROM in VM).
+# FIX: Pre-extract ALL .tcz files directly into the squashfs initramfs.
+#      Zero tce-load calls at boot. Everything is already installed.
+#      Boot sequence: GRUB -> splash -> login -> startx -> dashboard
+#      Total time to dashboard: < 30 seconds.
 
 set -e
 
@@ -11,104 +16,287 @@ EXT_DIR="$SCRIPT_DIR/tc_extensions"
 BASE_DIR="$SCRIPT_DIR/tc_base"
 ISO_ROOT="$SCRIPT_DIR/iso_root"
 
-echo "=== Remastering Tiny Core Linux (CDE Mode) ==="
+echo "=== Remastering Tiny Core Linux (D-Secure Edition) ==="
 
-# 0. Cleanup legacy
-rm -rf "$ISO_ROOT/isolinux"
-rm -rf "$ISO_ROOT/cde"
+# 0. Cleanup
+rm -rf "$ISO_ROOT/isolinux" "$ISO_ROOT/cde"
 mkdir -p "$ISO_ROOT/boot"
 
-# 1. Prepare CDE folder structure in iso_root
-echo "[1/4] Setting up CDE extensions..."
-mkdir -p "$ISO_ROOT/cde/optional"
-# Copy extensions and dep files
-cp "$EXT_DIR"/*.tcz "$ISO_ROOT/cde/optional/"
-cp "$EXT_DIR"/*.tcz.dep "$ISO_ROOT/cde/optional/" 2>/dev/null || true
-chmod -R 755 "$ISO_ROOT/cde"
-
-# Create onboot.lst dynamically
-echo "Generating onboot.lst..."
-ls -1 "$EXT_DIR"/*.tcz | xargs -n 1 basename > "$ISO_ROOT/cde/onboot.lst"
-
-# 2. Unpack corepure64.gz to add startup scripts
+# 2. Unpack base
 echo "[2/4] Unpacking corepure64.gz..."
-rm -rf "$WORK_DIR"
+[ -d "$WORK_DIR" ] && mv "$WORK_DIR" "$WORK_DIR.old.$(date +%s)"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 zcat "$BASE_DIR/corepure64.gz" | cpio -i -H newc -d 2>/dev/null
 
-# 3. Configure Autostart
-echo "[3/4] Configuring autostart..."
-
-# Create graphical startup script
-# FIX: Ensure /home/tc permissions are correct at runtime
-cat > "$WORK_DIR/opt/bootlocal.sh" <<EOF
-#!/bin/sh
-# Fix permissions for tc home (critical fix)
-chown -R 1001:50 /home/tc
-chmod -R u+rwX /home/tc
-
-# Load all other extensions (as user tc)
-echo "Loading extensions (as user tc)..." >> /tmp/tce.log
-su - tc -c "tce-load -i /cde/optional/*.tcz" >> /tmp/tce.log 2>&1
-
-
-# Start DBus (CRITICAL for Firefox speed)
-[ -x /usr/local/etc/init.d/dbus ] && /usr/local/etc/init.d/dbus start
-
-# Start networking (Robust for eth0, ens3, etc)
-pkill -9 udhcpc 2>/dev/null
-for iface in $(ls /sys/class/net | grep ^e); do
-    echo "Starting DHCP on $iface..." >> /tmp/bootlog.txt
-    ifconfig "$iface" up
-    udhcpc -b -i "$iface" &
+# Extract ALL extensions into the rootfs (The "Direct Mount" Fix)
+echo "Pre-extracting extensions into initramfs..."
+for ext in "$EXT_DIR"/*.tcz; do
+    echo "  Extracting: $(basename "$ext")"
+    if [ ! -s "$ext" ]; then
+        echo "  WARNING: Skipping empty extension $ext"
+        continue
+    fi
+    unsquashfs -f -d "$WORK_DIR" "$ext" || {
+        echo "  WARNING: Failed to extract $ext correctly! Trying fallback..."
+        unsquashfs -i -f -d "$WORK_DIR" "$ext" || true
+    }
 done
-EOF
-chmod +x "$WORK_DIR/opt/bootlocal.sh"
 
-# Create .xsession for the 'tc' user
-mkdir -p "$WORK_DIR/home/tc"
-cat > "$WORK_DIR/home/tc/.xsession" <<EOF
+# Compatibility: Create symlink for Ubuntu-style library paths
+# Tiny Core uses /usr/local/lib, but Ubuntu-built binaries expect /lib/x86_64-linux-gnu
+echo "Creating library compatibility symlinks..."
+mkdir -p "$WORK_DIR/lib/x86_64-linux-gnu" "$WORK_DIR/usr/lib/x86_64-linux-gnu"
+for lib in "$WORK_DIR/usr/local/lib"/*; do
+    [ -e "$lib" ] || continue
+    fname=$(basename "$lib")
+    ln -sf "/usr/local/lib/$fname" "$WORK_DIR/lib/x86_64-linux-gnu/$fname"
+    ln -sf "/usr/local/lib/$fname" "$WORK_DIR/usr/lib/x86_64-linux-gnu/$fname"
+done
+
+if [ ! -L "$WORK_DIR/lib64" ] && [ ! -d "$WORK_DIR/lib64" ]; then
+    ln -s lib "$WORK_DIR/lib64"
+fi
+
+# Fallback: Copy missing libraries directly from host if they are not in TCZ
+echo "Copying host specific libraries as fallback..."
+for lib in \
+    libwoff2dec.so.1.0.2 \
+    libwoff2common.so.1.0.2 \
+; do
+    if [ ! -f "$WORK_DIR/usr/local/lib/$lib" ]; then
+        cp "/lib/x86_64-linux-gnu/$lib" "$WORK_DIR/usr/local/lib/" 2>/dev/null || \
+        cp "/usr/lib/x86_64-linux-gnu/$lib" "$WORK_DIR/usr/local/lib/" 2>/dev/null || true
+    fi
+done
+
+# Fix for missing libudev versions which Xorg/App might want
+for libdir in "$WORK_DIR/usr/local/lib" "$WORK_DIR/usr/lib"; do
+    if [ -f "$libdir/libudev.so.1" ] && [ ! -f "$libdir/libudev.so.0" ]; then
+        ln -sf libudev.so.1 "$libdir/libudev.so.0"
+    elif [ -f "$libdir/libudev.so" ] && [ ! -f "$libdir/libudev.so.1" ]; then
+        ln -sf libudev.so "$libdir/libudev.so.1"
+    fi
+done
+
+# Pre-installation complete. Run ldconfig in the WORK_DIR to fix library cache
+echo "Running ldconfig in rootfs..."
+ldconfig -r "$WORK_DIR" 2>/dev/null || true
+
+# Back to WORK_DIR for rest of script
+cd "$WORK_DIR"
+
+# 3. Install tiny_splash
+echo "Compiling tiny_splash..."
+gcc -static -O3 "$SCRIPT_DIR/tiny_splash.c" -o "$SCRIPT_DIR/tiny_splash"
+cp "$SCRIPT_DIR"/splash_*.raw "$WORK_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/tiny_splash" "$WORK_DIR/sbin/tiny_splash"
+chmod +x "$WORK_DIR/sbin/tiny_splash"
+
+# Start splash as first thing in rcS
+if [ -f etc/init.d/rcS ]; then
+    sed -i '/tiny_splash/d' etc/init.d/rcS
+    # sed -i '1a /sbin/tiny_splash &' etc/init.d/rcS  # DISABLED FOR DEBUGGING
+    
+    # Enable verbose logging by removing redirections
+    sed -i 's|> /dev/null 2>&1||g' etc/init.d/rcS
+    sed -i 's|2>/dev/null||g' etc/init.d/rcS
+    
+    # Ensure system dbus is running before anything else
+    echo "sudo /usr/local/etc/init.d/dbus start" >> etc/init.d/rcS
+fi
+
+# 4. Configure Autostart
+echo "[3/4] Configuring Autostart Logic..."
+sed -i 's|tty1::respawn:/sbin/getty.*|tty1::once:/bin/login -f tc </dev/tty1 >/dev/tty1 2>\&1|' "$WORK_DIR/etc/inittab"
+> "$WORK_DIR/etc/motd"
+
+mkdir -p "$WORK_DIR/home/tc" "$WORK_DIR/etc/skel"
+mkdir -p "$WORK_DIR/etc/sysconfig"
+echo "Xorg" > "$WORK_DIR/etc/sysconfig/Xserver"
+echo "flwm" > "$WORK_DIR/etc/sysconfig/desktop"
+echo "tc" > "$WORK_DIR/etc/sysconfig/tcuser"
+
+# Silence tc-config wait prompt
+if [ -f "$WORK_DIR/etc/init.d/tc-config" ]; then
+    sed -i 's|read ans||g' "$WORK_DIR/etc/init.d/tc-config"
+fi
+
+# ============================================================
+# CRITICAL: Bypass Xorg.wrap — it blocks non-root users
+# Replace the wrapper script to call Xorg binary directly (suid)
+# ============================================================
+cat > "$WORK_DIR/usr/local/bin/Xorg" << 'XORG_WRAPPER_EOF'
 #!/bin/sh
-# Load X environment
-. /etc/init.d/tc-functions
+# Wrapper to ensure Xorg runs as root (setuid) and uses the right path
+exec /usr/local/lib/xorg/Xorg "$@"
+XORG_WRAPPER_EOF
+chmod 4755 "$WORK_DIR/usr/local/lib/xorg/Xorg" 2>/dev/null || chmod +s "$WORK_DIR/usr/local/lib/xorg/Xorg" || true
+chmod +x "$WORK_DIR/usr/local/bin/Xorg"
 
-# FIX: Force X cursor to be visible and defined
-xsetroot -cursor_name left_ptr &
+# Also allow anybody to run X (Xwrapper.config)
+mkdir -p "$WORK_DIR/etc/X11"
+echo "allowed_users=anybody" > "$WORK_DIR/etc/X11/Xwrapper.config"
+echo "needs_root_rights=yes" >> "$WORK_DIR/etc/X11/Xwrapper.config"
 
-# Start window manager
-flwm &
+# CRITICAL: udev rules for tc user graphics/input
+mkdir -p "$WORK_DIR/etc/udev/rules.d"
+cat > "$WORK_DIR/etc/udev/rules.d/99-dsecure.rules" << 'UDEV_EOF'
+KERNEL=="console", MODE="0666"
+KERNEL=="fb0", MODE="0666"
+KERNEL=="tty[0-9]*", MODE="0666"
+KERNEL=="event*", MODE="0666"
+KERNEL=="mouse*", MODE="0666"
+KERNEL=="uinput", MODE="0666"
+UDEV_EOF
 
-# Wait for X to settle
-sleep 3
+# No xorg.conf - rely on auto-configuration (modesetting takes priority)
 
-# Launch Dashboard
-python3.9 /opt/dashboard.py &
+# ============================================================
+# .profile — Auto-login, auto-startx
+# ============================================================
+# Prepare the startup logic in .profile
+cat > "$WORK_DIR/home/tc/.profile" << 'PROFILE_EOF'
+#!/bin/sh
+export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/home/tc
+export USER=tc
 
-# Fallback terminal
-aterm &
-EOF
-chmod +x "$WORK_DIR/home/tc/.xsession"
+# Ensure we only run this once on boot
+case "$(tty)" in
+    /dev/tty1|/dev/vc/1|/dev/ttyS0)
+        [ -f /tmp/.boot_done ] && return
+        touch /tmp/.boot_done
+        
+        echo "[BOOT] Dashboard Init (PID: $$) on $(tty)" | tee /dev/console
+        
+        # Kill splash
+        echo "[BOOT] Stopping splash..." | tee /dev/console
+        sudo pkill -TERM tiny_splash 2>/dev/null || true
+        sleep 1
+        sudo pkill -9 tiny_splash 2>/dev/null || true
 
-# Copy dashboard app to /opt
-cp "$SCRIPT_DIR/dashboard.py" "$WORK_DIR/opt/dashboard.py"
-chmod +x "$WORK_DIR/opt/dashboard.py"
+        # Hardware setup
+        echo "[BOOT] Probing hardware..." | tee /dev/console
+        sudo depmod -a
+        sudo udevadm trigger --subsystem-match=graphics
+        sudo udevadm settle
+        sudo chown tc:staff /dev/fb0 /dev/tty1 2>/dev/null || true
 
-# Custom boot message
-sed -i 's/Tiny Core Linux/Custom ISO with Dashboard/g' "$WORK_DIR/etc/init.d/rcS" 2>/dev/null || true
+        # Set up runtime env
+        export HOME=/home/tc
+        export USER=tc
+        export XDG_RUNTIME_DIR=/tmp/runtime-tc
+        mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
+        export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu
+        export DISPLAY=:0
+        export WEBKIT_DISABLE_COMPOSITING_MODE=1
+        export WEBKIT_DISABLE_SANDBOX=1
+        export GDK_BACKEND=x11
+        export LIBGL_ALWAYS_SOFTWARE=1
 
-# 4. Repack into core_custom.gz
-echo "[4/4] Repacking minimal initramfs..."
+        echo "[BOOT] Starting Xorg on vt1..." | tee /dev/console
+        # -ac disables access control
+        # -retro shows the grid if successful
+        # Capture the exit code properly and remove vt1 to let Xorg use the current tty
+        ( sudo sh -c "LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu /usr/local/lib/xorg/Xorg :0 -ac -retro -nolisten tcp -allowMouseOpenFail -logverbose 6 > /tmp/xorg.log 2>&1"; echo $? > /tmp/xorg.exit ) &
+        X_PID=$!
 
-# FIX: Set ownership explicitly using fakeroot context
-chown -R 0:0 .
-chown -R 1001:50 home/tc
+        # Wait for X
+        echo "[BOOT] Waiting for server..." | tee /dev/console
+        READY=0
+        for i in $(seq 1 20); do
+            if ! kill -0 $X_PID 2>/dev/null; then
+               # Xorg exited
+               X_EXIT=$(cat /tmp/xorg.exit 2>/dev/null || echo "unknown")
+               echo "[BOOT] X failed! Exit status: $X_EXIT" | tee /dev/console
+               echo "--- /tmp/xorg.log ---" | tee /dev/console
+               cat /tmp/xorg.log | tee /dev/console
+               if [ -f /var/log/Xorg.0.log ]; then
+                   echo "--- /var/log/Xorg.0.log ---" | tee /dev/console
+                   cat /var/log/Xorg.0.log | tee /dev/console
+               fi
+               break
+            fi
+            if DISPLAY=:0 xwininfo -root >/dev/null 2>&1 || DISPLAY=:0 xprop -root >/dev/null 2>&1; then
+               READY=1
+               break
+            fi
+            [ -f /tmp/.X0-lock ] && [ $i -gt 2 ] && READY=1 && break
+            sleep 1
+        done
+
+        if [ "$READY" = "1" ]; then
+           echo "[BOOT] X Server Ready! Launching Window Manager..." | tee /dev/console
+           xsetroot -solid "#2c3e50" -display :0
+           flwm &
+           sleep 1
+           
+           if [ -f /opt/d-secure-ui/app ]; then
+               cd /opt/d-secure-ui
+               echo "[BOOT] Launching Tauri Dashboard..." | tee /dev/console
+               dbus-run-session ./app > /tmp/dashboard.log 2>&1 || {
+                   EXIT_CODE=$?
+                   echo "[FAILURE] Dashboard App exited code $EXIT_CODE" | tee /dev/console
+                   echo "--- MISSING LIBRARIES ---" | tee /dev/console
+                   ldd ./app | grep "not found" | tee /dev/console
+                   echo "--- GLIBC CHECK ---" | tee /dev/console
+                   strings /lib/libc.so.6 | grep GLIBC_ | tail -n 5 | tee /dev/console
+                   echo "--- LAST 20 LINES OF LOG ---" | tee /dev/console
+                   tail -n 20 /tmp/dashboard.log | tee /dev/console
+                   
+                   # Fallback Term
+                   aterm -display :0 -title "DEBUG" -geometry 80x24+0+0 &
+               }
+           elif [ -f /opt/react_python/react_launcher.py ]; then
+               echo "[BOOT] Tauri missing. Launching Python Fallback..." | tee /dev/console
+               python3 /opt/react_python/react_launcher.py > /tmp/python_dashboard.log 2>&1 &
+           else
+               echo "[ERROR] No dashboard found in /opt!" | tee /dev/console
+               aterm -display :0 -title "ERROR" -geometry 80x24+0+0 &
+           fi
+        else
+           echo "[BOOT] X initialization failed after 20s. Check /tmp/xorg.log." | tee /dev/console
+           cat /tmp/xorg.log | tee /dev/console
+        fi
+        wait $X_PID
+        ;;
+esac
+PROFILE_EOF
+
+# ============================================================
+# Install Tauri Dashboard
+# ============================================================
+echo "Installing Tauri Dashboard..."
+mkdir -p "$WORK_DIR/opt/d-secure-ui"
+if [ -f "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" ]; then
+    cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "$WORK_DIR/opt/d-secure-ui/app"
+    chmod +x "$WORK_DIR/opt/d-secure-ui/app"
+else
+    echo "WARNING: Tauri binary not found at release path!"
+fi
+chown -R 1001:50 "$WORK_DIR/opt/d-secure-ui"
+
+# ============================================================
+# Install Python Dashboard (Fallback)
+# ============================================================
+echo "Installing Python Dashboard..."
+mkdir -p "$WORK_DIR/opt/react_python"
+if [ -f "$SCRIPT_DIR/dashboard.py" ]; then
+    cp "$SCRIPT_DIR/dashboard.py" "$WORK_DIR/opt/react_python/react_launcher.py"
+    chmod +x "$WORK_DIR/opt/react_python/react_launcher.py"
+fi
+chown -R 1001:50 "$WORK_DIR/opt/react_python"
 
 # Repack
-find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_ROOT/boot/core_custom.gz"
+echo "[4/4] Repacking..."
+chmod +x "$WORK_DIR/home/tc/.profile"
+chown -R 1001:50 "$WORK_DIR/home/tc"
+cp -p "$WORK_DIR/home/tc/.profile" "$WORK_DIR/etc/skel/"
+echo "tc ALL=(ALL) NOPASSWD: ALL" >> "$WORK_DIR/etc/sudoers"
 
-# Copy kernel (ensure fresh copy)
+find . | cpio -o -H newc 2>/dev/null | gzip -1 > "$ISO_ROOT/boot/core_custom.gz"
 cp "$BASE_DIR/vmlinuz64" "$ISO_ROOT/boot/vmlinuz64"
 cp "$BASE_DIR/modules64.gz" "$ISO_ROOT/boot/modules64.gz"
 
-echo "Remaster complete: core_custom.gz ready"
+echo "Remaster complete!"

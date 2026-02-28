@@ -15,10 +15,12 @@ fi
 
 exec qemu-system-x86_64 \
     -cdrom "$ISO" \
-    -m 1024 \
+    -m 2048 \
     -vga std \
     -boot order=d,strict=on \
     -nic user,model=virtio-net-pci \
+    -usb -device usb-tablet \
     -enable-kvm \
     -cpu host \
+    -serial file:qemu_debug.log \
     "$@"
