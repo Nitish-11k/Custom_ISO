@@ -126,6 +126,8 @@ for ext in \
     openbox.tcz \
     xcursor-themes.tcz \
     input-tablet-touchscreen-6.6.8-tinycore64.tcz \
+    ipv6-network-6.6.8-tinycore64.tcz \
+    xf86-input-evdev.tcz \
     xdotool.tcz \
 ; do
     echo ">>> Resolving: $ext"

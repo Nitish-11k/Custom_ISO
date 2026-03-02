@@ -211,18 +211,24 @@ case "$(tty)" in
         # Hardware setup
         echo "[BOOT] Probing hardware..." | tee /dev/console
         sudo depmod -a
-        sudo udevadm trigger --subsystem-match=graphics
-        sudo udevadm trigger --subsystem-match=input
-        sudo udevadm settle
-        sudo chown tc:staff /dev/fb0 /dev/tty1 2>/dev/null || true
-
-        # INPUT FIX: Load input kernel modules for real hardware (pendrive boot)
-        echo "[BOOT] Loading input modules..." | tee /dev/console
-        for mod in hid hid-generic usbhid i8042 atkbd psmouse evdev mousedev; do
+        
+        # Load input and network modules (Critical for QEMU and real hardware)
+        echo "[BOOT] Loading modules..." | tee /dev/console
+        for mod in hid hid-generic usbhid i8042 atkbd psmouse evdev mousedev virtio_net virtio_pci virtio_input; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
-        sudo udevadm trigger --subsystem-match=input
+        
+        sudo udevadm trigger
         sudo udevadm settle --timeout=5
+        
+        # NETWORK FIX: Attempt to get IP via DHCP
+        echo "[BOOT] Starting network (DHCP)..." | tee /dev/console
+        sudo udhcpc -b -i eth0 > /tmp/dhcp.log 2>&1 &
+        
+        echo "--- /dev/input status ---" | tee /dev/console
+        ls -la /dev/input | tee /dev/console
+        
+        sudo chown tc:staff /dev/fb0 /dev/tty1 2>/dev/null || true
         sudo chmod 666 /dev/input/event* 2>/dev/null || true
         sudo chmod 666 /dev/input/mouse* 2>/dev/null || true
         sudo chmod 666 /dev/input/mice 2>/dev/null || true
@@ -238,12 +244,12 @@ case "$(tty)" in
         export WEBKIT_DISABLE_SANDBOX=1
         export GDK_BACKEND=x11
         export LIBGL_ALWAYS_SOFTWARE=1
+        
+        # Fix for network detection in some browsers/apps
+        echo "127.0.0.1 localhost $(hostname)" | sudo tee /etc/hosts >/dev/null
 
         echo "[BOOT] Starting Xorg on vt1..." | tee /dev/console
-        # -ac disables access control
-        # -retro shows the grid if successful
-        # Capture the exit code properly and remove vt1 to let Xorg use the current tty
-        ( sudo sh -c "LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib:/usr/lib/x86_64-linux-gnu /usr/local/lib/xorg/Xorg :0 -ac -retro -nolisten tcp -allowMouseOpenFail -logverbose 6 > /tmp/xorg.log 2>&1"; echo $? > /tmp/xorg.exit ) &
+        ( sudo sh -c "LD_LIBRARY_PATH=$LD_LIBRARY_PATH /usr/local/lib/xorg/Xorg :0 -ac -retro -nolisten tcp -allowMouseOpenFail -logverbose 6 > /tmp/xorg.log 2>&1"; echo $? > /tmp/xorg.exit ) &
         X_PID=$!
 
         # Wait for X
