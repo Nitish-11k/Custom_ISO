@@ -107,6 +107,26 @@ for ext in \
     gcc_libs.tcz \
     libEGL.tcz \
     libGLESv2.tcz \
+    util-linux.tcz \
+    wifi.tcz \
+    wireless-6.6.8-tinycore64.tcz \
+    wireless_tools.tcz \
+    wpa_supplicant-dbus.tcz \
+    libiw.tcz \
+    libnl.tcz \
+    modemmanager.tcz \
+    libmbim.tcz \
+    libqmi.tcz \
+    pciutils.tcz \
+    xf86-input-evdev.tcz \
+    xf86-input-synaptics.tcz \
+    xf86-input-keyboard.tcz \
+    xf86-input-mouse.tcz \
+    libinput.tcz \
+    openbox.tcz \
+    xcursor-themes.tcz \
+    input-tablet-touchscreen-6.6.8-tinycore64.tcz \
+    xdotool.tcz \
 ; do
     echo ">>> Resolving: $ext"
     download_tcz "$ext"

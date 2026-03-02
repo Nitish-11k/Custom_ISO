@@ -139,7 +139,7 @@ mkdir -p "$WORK_DIR/etc/X11"
 echo "allowed_users=anybody" > "$WORK_DIR/etc/X11/Xwrapper.config"
 echo "needs_root_rights=yes" >> "$WORK_DIR/etc/X11/Xwrapper.config"
 
-# CRITICAL: udev rules for tc user graphics/input
+# CRITICAL: udev rules for tc user graphics/input/usb
 mkdir -p "$WORK_DIR/etc/udev/rules.d"
 cat > "$WORK_DIR/etc/udev/rules.d/99-dsecure.rules" << 'UDEV_EOF'
 KERNEL=="console", MODE="0666"
@@ -148,7 +148,39 @@ KERNEL=="tty[0-9]*", MODE="0666"
 KERNEL=="event*", MODE="0666"
 KERNEL=="mouse*", MODE="0666"
 KERNEL=="uinput", MODE="0666"
+SUBSYSTEM=="input", MODE="0666"
+SUBSYSTEM=="usb", MODE="0666"
 UDEV_EOF
+
+# INPUT FIX: Remove VMware vmmouse driver (conflicts with real hardware)
+rm -f "$WORK_DIR/usr/local/share/X11/xorg.conf.d/50-vmmouse.conf"
+rm -f "$WORK_DIR/usr/local/lib/xorg/modules/input/vmmouse_drv.so"
+rm -f "$WORK_DIR/usr/local/bin/vmmouse_detect"
+
+# INPUT FIX: Xorg libinput config for real hardware
+mkdir -p "$WORK_DIR/usr/local/share/X11/xorg.conf.d"
+cat > "$WORK_DIR/usr/local/share/X11/xorg.conf.d/40-libinput.conf" << 'XORG_INPUT_EOF'
+Section "InputClass"
+        Identifier "libinput pointer catchall"
+        MatchIsPointer "on"
+        MatchDevicePath "/dev/input/event*"
+        Driver "libinput"
+EndSection
+
+Section "InputClass"
+        Identifier "libinput keyboard catchall"
+        MatchIsKeyboard "on"
+        MatchDevicePath "/dev/input/event*"
+        Driver "libinput"
+EndSection
+
+Section "InputClass"
+        Identifier "libinput touchpad catchall"
+        MatchIsTouchpad "on"
+        MatchDevicePath "/dev/input/event*"
+        Driver "libinput"
+EndSection
+XORG_INPUT_EOF
 
 # No xorg.conf - rely on auto-configuration (modesetting takes priority)
 
@@ -180,8 +212,20 @@ case "$(tty)" in
         echo "[BOOT] Probing hardware..." | tee /dev/console
         sudo depmod -a
         sudo udevadm trigger --subsystem-match=graphics
+        sudo udevadm trigger --subsystem-match=input
         sudo udevadm settle
         sudo chown tc:staff /dev/fb0 /dev/tty1 2>/dev/null || true
+
+        # INPUT FIX: Load input kernel modules for real hardware (pendrive boot)
+        echo "[BOOT] Loading input modules..." | tee /dev/console
+        for mod in hid hid-generic usbhid i8042 atkbd psmouse evdev mousedev; do
+            sudo modprobe "$mod" 2>/dev/null || true
+        done
+        sudo udevadm trigger --subsystem-match=input
+        sudo udevadm settle --timeout=5
+        sudo chmod 666 /dev/input/event* 2>/dev/null || true
+        sudo chmod 666 /dev/input/mouse* 2>/dev/null || true
+        sudo chmod 666 /dev/input/mice 2>/dev/null || true
 
         # Set up runtime env
         export HOME=/home/tc
@@ -231,6 +275,10 @@ case "$(tty)" in
            xsetroot -solid "#2c3e50" -display :0
            flwm &
            sleep 1
+
+           # INPUT FIX: Re-set permissions after Xorg starts (it may re-enumerate)
+           sudo chmod 666 /dev/input/event* 2>/dev/null || true
+           sudo chmod 666 /dev/input/mice 2>/dev/null || true
            
            if [ -f /opt/d-secure-ui/app ]; then
                cd /opt/d-secure-ui
@@ -300,3 +348,46 @@ cp "$BASE_DIR/vmlinuz64" "$ISO_ROOT/boot/vmlinuz64"
 cp "$BASE_DIR/modules64.gz" "$ISO_ROOT/boot/modules64.gz"
 
 echo "Remaster complete!"
+# ============================================================
+# Prepare Bootloader (GRUB)
+# ============================================================
+echo "Preparing GRUB Bootloader..."
+mkdir -p "$ISO_ROOT/boot/grub"
+cp -r /home/nickx/D-secureOS/iso/boot/grub/themes "$ISO_ROOT/boot/grub/" || true
+cp -r /home/nickx/D-secureOS/iso/boot/grub/fonts "$ISO_ROOT/boot/grub/" || true
+cp /home/nickx/D-secureOS/iso/boot/grub/*.png "$ISO_ROOT/boot/grub/" 2>/dev/null || true
+cp /home/nickx/D-secureOS/iso/boot/grub/*.jpg "$ISO_ROOT/boot/grub/" 2>/dev/null || true
+
+cat << 'GRUB_EOF' > "$ISO_ROOT/boot/grub/grub.cfg"
+set default=0
+set timeout=15
+
+insmod all_video
+insmod gfxterm
+insmod png
+insmod jpeg
+
+set gfxmode=1024x768,auto
+terminal_output gfxterm
+
+set theme=($root)/boot/grub/themes/dsecure/theme.txt
+export theme
+
+background_image /boot/grub/background.png
+
+menuentry "D-Secure Drive Eraser (64-bit)" {
+    echo "Loading D-Secure System Core..."
+    linux /boot/vmlinuz64 loglevel=3 cde tce=cde waitusb=20 vga=791 showapps noswap laptop
+    initrd /boot/core_custom.gz /boot/modules64.gz
+}
+
+menuentry "System Tools (Reboot)" {
+    reboot
+}
+
+menuentry "Power Off" {
+    halt
+}
+GRUB_EOF
+
+echo "Finalizing Branded ISO..."
