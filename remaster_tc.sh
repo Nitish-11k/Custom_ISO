@@ -152,10 +152,10 @@ SUBSYSTEM=="input", MODE="0666"
 SUBSYSTEM=="usb", MODE="0666"
 UDEV_EOF
 
-# INPUT FIX: Remove VMware vmmouse driver (conflicts with real hardware)
-rm -f "$WORK_DIR/usr/local/share/X11/xorg.conf.d/50-vmmouse.conf"
-rm -f "$WORK_DIR/usr/local/lib/xorg/modules/input/vmmouse_drv.so"
-rm -f "$WORK_DIR/usr/local/bin/vmmouse_detect"
+# Keep vmmouse driver for VirtualBox/VMware support
+# rm -f "$WORK_DIR/usr/local/share/X11/xorg.conf.d/50-vmmouse.conf"
+# rm -f "$WORK_DIR/usr/local/lib/xorg/modules/input/vmmouse_drv.so"
+# rm -f "$WORK_DIR/usr/local/bin/vmmouse_detect"
 
 # INPUT FIX: Xorg libinput config for real hardware
 mkdir -p "$WORK_DIR/usr/local/share/X11/xorg.conf.d"
@@ -212,9 +212,12 @@ case "$(tty)" in
         echo "[BOOT] Probing hardware..." | tee /dev/console
         sudo depmod -a
         
-        # Load input and network modules (Critical for QEMU and real hardware)
+        # Load input, network, and VM modules (Critical for VirtualBox, QEMU and real hardware)
         echo "[BOOT] Loading modules..." | tee /dev/console
-        for mod in hid hid-generic usbhid i8042 atkbd psmouse evdev mousedev virtio_net virtio_pci virtio_input; do
+        for mod in hid hid-generic usbhid i8042 atkbd psmouse evdev mousedev \
+                   virtio_net virtio_pci virtio_input \
+                   vboxguest vboxvideo vmwgfx \
+                   e1000 pcnet32 8139cp 8139too ne2k_pci; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
         

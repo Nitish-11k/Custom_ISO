@@ -102,6 +102,8 @@ for ext in \
     nss.tcz \
     nspr.tcz \
     graphics-6.6.8-tinycore64.tcz \
+    net-modules-6.6.8-tinycore64.tcz \
+    xf86-video-vmware.tcz \
     libmanette.tcz \
     brotli.tcz \
     gcc_libs.tcz \
@@ -128,6 +130,7 @@ for ext in \
     input-tablet-touchscreen-6.6.8-tinycore64.tcz \
     ipv6-network-6.6.8-tinycore64.tcz \
     xf86-input-evdev.tcz \
+    xf86-video-vmware.tcz \
     xdotool.tcz \
 ; do
     echo ">>> Resolving: $ext"
