@@ -89,7 +89,8 @@ cd "$WORK_DIR"
 # 3. Install tiny_splash
 echo "Compiling tiny_splash..."
 gcc -static -O3 "$SCRIPT_DIR/tiny_splash.c" -o "$SCRIPT_DIR/tiny_splash"
-cp "$SCRIPT_DIR"/splash_*.raw "$WORK_DIR/" 2>/dev/null || true
+# IMPORTANT: Only copy splash_0.raw to save ~35MB of space
+cp "$SCRIPT_DIR/splash_0.raw" "$WORK_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/tiny_splash" "$WORK_DIR/sbin/tiny_splash"
 chmod +x "$WORK_DIR/sbin/tiny_splash"
 
@@ -352,7 +353,7 @@ chown -R 1001:50 "$WORK_DIR/home/tc"
 cp -p "$WORK_DIR/home/tc/.profile" "$WORK_DIR/etc/skel/"
 echo "tc ALL=(ALL) NOPASSWD: ALL" >> "$WORK_DIR/etc/sudoers"
 
-find . | cpio -o -H newc 2>/dev/null | gzip -1 > "$ISO_ROOT/boot/core_custom.gz"
+find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$ISO_ROOT/boot/core_custom.gz"
 cp "$BASE_DIR/vmlinuz64" "$ISO_ROOT/boot/vmlinuz64"
 cp "$BASE_DIR/modules64.gz" "$ISO_ROOT/boot/modules64.gz"
 

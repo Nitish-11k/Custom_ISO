@@ -129,7 +129,6 @@ for ext in \
     xcursor-themes.tcz \
     input-tablet-touchscreen-6.6.8-tinycore64.tcz \
     ipv6-network-6.6.8-tinycore64.tcz \
-    xf86-input-evdev.tcz \
     xf86-video-vmware.tcz \
     xdotool.tcz \
 ; do
