@@ -22,3 +22,9 @@ tiny_splash
 *.gz
 *.tcz
 *.dep
+initrd_work/
+tauri-dashboard-patched
+grub_cfg
+*.sh.old
+*.sh.bak
+build.pid

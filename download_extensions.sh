@@ -102,7 +102,6 @@ for ext in \
     nss.tcz \
     nspr.tcz \
     graphics-6.6.8-tinycore64.tcz \
-    net-modules-6.6.8-tinycore64.tcz \
     xf86-video-vmware.tcz \
     libmanette.tcz \
     brotli.tcz \
@@ -128,9 +127,11 @@ for ext in \
     openbox.tcz \
     xcursor-themes.tcz \
     input-tablet-touchscreen-6.6.8-tinycore64.tcz \
-    ipv6-network-6.6.8-tinycore64.tcz \
-    xf86-video-vmware.tcz \
+    Xorg-7.7-3d.tcz \
+    llvm15-lib.tcz \
     xdotool.tcz \
+    xrandr.tcz \
+    xsetroot.tcz \
 ; do
     echo ">>> Resolving: $ext"
     download_tcz "$ext"
