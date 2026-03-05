@@ -135,7 +135,10 @@ if [ -f /opt/d-secure-ui/app ]; then
     echo "[GUI] Launching Tauri Dashboard..."
     cd /opt/d-secure-ui
     # dbus-run-session ensures the app can communicate with system services
-    dbus-run-session ./app
+    dbus-run-session ./app || {
+        echo "[GUI] App failed to start! Dropping to terminal fallback."
+        aterm -title "D-Secure DEBUG Term" -geometry 80x24+0+0
+    }
 else
     echo "[ERROR] Dashboard binary missing at /opt/d-secure-ui/app!"
     aterm -title "ERROR: Binary Missing" -geometry 80x24+0+0
@@ -161,7 +164,8 @@ case "$(tty)" in
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
         
-        echo "[BOOT] Initializing D-Secure System Components..."
+        # Ensure we can see output on both screen and serial
+        echo "[BOOT] Initializing D-Secure System Components..." | tee /dev/console
         
         # Probing and loading crucial modules
         sudo depmod -a
@@ -171,23 +175,29 @@ case "$(tty)" in
         
         sudo udevadm trigger && sudo udevadm settle --timeout=3
         
-        # Network setup
+        # Network and DBus Prep
         sudo ifconfig lo 127.0.0.1 up
         sudo udhcpc -b -i eth0 >/dev/null 2>&1 &
+        
+        # MACHINE ID is often required by newer GTK/WebKit
+        if [ ! -f /etc/machine-id ]; then
+            sudo dbus-uuidgen --ensure=/etc/machine-id
+            sudo dbus-uuidgen --ensure
+        fi
         
         # Permissions for Graphics and Input
         sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
         
-        # Prepare runtime directory
+        # Prepare runtime directory BEFORE startx
         export XDG_RUNTIME_DIR=/tmp/runtime-tc
         mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
         
-        echo "[BOOT] Initializing GUI via startx..."
+        echo "[BOOT] Initializing GUI via startx..." | tee /dev/console
         # startx will read .xsession and manage Xorg for us
-        startx
+        startx 2>&1 | tee /tmp/startx.log > /dev/ttyS0
         
         # If GUI exits, drop to a clean shell
-        echo "[BOOT] GUI Session ended. Dropping to fallback shell."
+        echo "[BOOT] GUI Session ended. Dropping to fallback shell." | tee /dev/console
         exec /bin/sh
         ;;
 esac
@@ -226,6 +236,8 @@ if [ -f "/home/nickx/Downloads/grub_cfg" ]; then
     sed -i 's/insmod vbe/insmod vbe\ninsmod efi_gop\ninsmod efi_uga/g' "$ISO_ROOT/boot/grub/grub.cfg"
     # Remove the 'nomodeset' and other flags that break modern VM/Laptop graphics
     sed -i 's/nomodeset acpi=off noapic nolapic intel_idle.max_cstate=0 idle=poll//g' "$ISO_ROOT/boot/grub/grub.cfg"
+    # Enable Serial logging for host-side debug
+    sed -i 's/linux \/boot\/vmlinuz64/linux \/boot\/vmlinuz64 console=tty0 console=ttyS0/g' "$ISO_ROOT/boot/grub/grub.cfg"
 else
     # Minimal fallback config if file missing
     cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'EOF'
@@ -243,7 +255,7 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "D-Secure Drive Eraser" {
-    linux /boot/vmlinuz64 quiet loglevel=3 vga=791 noswap laptop
+    linux /boot/vmlinuz64 console=tty0 console=ttyS0 loglevel=7 noswap laptop intel_idle.max_cstate=0 idle=poll
     initrd /boot/core_custom.gz /boot/modules64.gz
 }
 EOF
