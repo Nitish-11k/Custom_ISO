@@ -100,32 +100,40 @@ cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
 </openbox_config>
 OPENBOX_EOF
 
-# .xsession — Dynamic GUI Startup (As tc user)
+# .xsession — GUI Client Sequence
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
+# REDIRECT ERRORS (Crucial for debugging Black Screen)
+exec 2>&1 | tee /tmp/xsession.log
+
+# Set environment
+export HOME=/home/tc
+export USER=tc
+export DISPLAY=:0
+export XDG_RUNTIME_DIR=/tmp/runtime-tc
+
 # WebKit/Tauri compatibility flags
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_SANDBOX=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
-export XDG_RUNTIME_DIR=/tmp/runtime-tc
 
 echo "[GUI] Starting Openbox..." | tee /dev/console
 openbox --config-file $HOME/.config/openbox/rc.xml &
 
-# Hide black edges with white background
+# Set background
 xsetroot -cursor_name left_ptr -solid "#ffffff" || true
 sudo pkill -TERM tiny_splash 2>/dev/null || true
 
-# Wait for system services
+# Give services time to settle (DBus, Openbox)
 sleep 5
 
 if [ -f /opt/d-secure-ui/app ]; then
     echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
     cd /opt/d-secure-ui
     # dbus-run-session is mandatory correctly for Tauri/WebView2 communication
-    dbus-run-session ./app 2>&1 | tee /tmp/app.log || {
-        echo "[ERROR] Dashboard app failed. Opening debug console." | tee /dev/console
+    dbus-run-session /opt/d-secure-ui/app 2>&1 | tee /tmp/app.log || {
+        echo "[ERROR] Dashboard app failed. See debug console." | tee /dev/console
         aterm -title "App Error Log" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
     }
 else
@@ -141,49 +149,46 @@ cat > home/tc/.profile << 'PROFILE_EOF'
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/home/tc
 export USER=tc
+export DISPLAY=:0
 
 case "$(tty)" in
     /dev/tty1|/dev/vc/1)
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
         
-        echo "[BOOT] Initializing D-Secure System (v1.3)..." | tee /dev/console
+        echo "[BOOT] Initializing D-Secure Tools..." | tee /dev/console
         
-        # Load kernel modules
+        # Load drivers
         sudo depmod -a
         for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
         sudo udevadm trigger && sudo udevadm settle --timeout=3
         
-        # Start Mandatory DBus
-        [ -f /usr/local/etc/init.d/dbus ] && sudo /usr/local/etc/init.d/dbus start
+        # Start DBus
+        [ -f /usr/local/etc/init.d/dbus ] && sudo /usr/local/etc/init.d/dbus start | tee /dev/console
         [ -f /etc/machine-id ] || sudo dbus-uuidgen --ensure=/etc/machine-id
         
-        # libudev symlink (Fixes some WebKit crashes)
-        if [ ! -f /usr/lib/libudev.so.0 ] && [ -f /usr/lib/libudev.so.1 ]; then
-            sudo ln -sf libudev.so.1 /usr/lib/libudev.so.0
-        fi
+        # Mandatory symlinks
+        [ -d /lib64 ] || sudo ln -sf /lib /lib64
         
-        # Hardware permissions for the tc user
+        # Permissions
         sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
         
-        # XDG Environment
+        # Environment
         export XDG_RUNTIME_DIR=/tmp/runtime-tc
         mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
         
         echo "[BOOT] Starting Graphical Subsystem..." | tee /dev/console
-        # Run startx normally, it will choose the best VT and source .xsession
-        startx 2>&1 | tee /tmp/startx.log
+        startx -- :0 2>&1 | tee /tmp/startx.log
         
-        echo "[BOOT] GUI exited. Falling back to recovery shell." | tee /dev/console
+        echo "[BOOT] GUI exited. Fallback shell." | tee /dev/console
         exec /bin/sh
         ;;
 esac
 PROFILE_EOF
 chmod +x home/tc/.profile
 cp -p home/tc/.profile home/tc/.xsession etc/skel/
-chown -R 1000:50 home/tc etc/skel 
 echo "tc ALL=(ALL) NOPASSWD: ALL" >> etc/sudoers
 
 # 5. Install Tauri App
@@ -191,7 +196,20 @@ echo "Installing Dashboard..."
 mkdir -p opt/d-secure-ui
 cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
 chmod +x "opt/d-secure-ui/app"
-chown -R 1000:50 opt/d-secure-ui
+
+# Dynamic Loader Fix
+ln -sf lib lib64
+
+# Host libs
+HOST_PREFIX="/lib/x86_64-linux-gnu"
+for lib in libatomic.so.1 libwebpdemux.so.2; do
+    if [ ! -f "usr/lib/$lib" ] && [ -f "$HOST_PREFIX/$lib" ]; then
+        mkdir -p usr/local/lib
+        cp "$HOST_PREFIX/$lib" "usr/local/lib/$lib"
+    fi
+done
+
+chown -R 1000:50 home/tc etc/skel opt/d-secure-ui
 
 # 6. Repack (XZ-2 for speed)
 echo "[4/4] Repacking..."
