@@ -100,45 +100,44 @@ cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
 </openbox_config>
 OPENBOX_EOF
 
-# .xsession — GUI Startup Client
+# .xsession — Dynamic GUI Startup (As tc user)
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
-# Compatibility flags for WebKitGTK in VMs
+# WebKit/Tauri compatibility flags
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_DISABLE_SANDBOX=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 export XDG_RUNTIME_DIR=/tmp/runtime-tc
 
-echo "[GUI] Starting Window Manager..."
+echo "[GUI] Starting Openbox..." | tee /dev/console
 openbox --config-file $HOME/.config/openbox/rc.xml &
 
-# Set pure white background
+# Hide black edges with white background
 xsetroot -cursor_name left_ptr -solid "#ffffff" || true
-
-# Stop splash screen
 sudo pkill -TERM tiny_splash 2>/dev/null || true
 
-sleep 2
+# Wait for system services
+sleep 5
 
-# Launch Dashboard
 if [ -f /opt/d-secure-ui/app ]; then
-    echo "[GUI] Launching Tauri Dashboard..."
+    echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
     cd /opt/d-secure-ui
-    dbus-run-session ./app || aterm -title "D-Secure DEBUG"
+    # dbus-run-session is mandatory correctly for Tauri/WebView2 communication
+    dbus-run-session ./app 2>&1 | tee /tmp/app.log || {
+        echo "[ERROR] Dashboard app failed. Opening debug console." | tee /dev/console
+        aterm -title "App Error Log" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
+    }
 else
-    echo "[ERROR] Dashboard binary not found!"
-    aterm -title "ERROR: Missing Binary"
+    echo "[ERROR] Dashboard binary missing!" | tee /dev/console
+    aterm -title "ERROR: Binary Not Found"
 fi
 XSESSION_EOF
 chmod +x home/tc/.xsession
 
-# .profile — Autostart logic
+# .profile — Autostart sequence
 cat > home/tc/.profile << 'PROFILE_EOF'
 #!/bin/sh
-# Redirect boot logs to serial for debug
-exec >/dev/ttyS0 2>&1
-set -x
-
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/home/tc
 export USER=tc
@@ -148,38 +147,43 @@ case "$(tty)" in
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
         
-        echo "[BOOT] Loading Drivers..." | tee /dev/console
+        echo "[BOOT] Initializing D-Secure System (v1.3)..." | tee /dev/console
+        
+        # Load kernel modules
         sudo depmod -a
         for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
         sudo udevadm trigger && sudo udevadm settle --timeout=3
         
-        # Start DBus (Mandatory for Tauri)
-        if [ -f /usr/local/etc/init.d/dbus ]; then
-            sudo /usr/local/etc/init.d/dbus start | tee /dev/console
-        fi
-        
-        # Machine ID
+        # Start Mandatory DBus
+        [ -f /usr/local/etc/init.d/dbus ] && sudo /usr/local/etc/init.d/dbus start
         [ -f /etc/machine-id ] || sudo dbus-uuidgen --ensure=/etc/machine-id
         
-        # Hardware permissions
+        # libudev symlink (Fixes some WebKit crashes)
+        if [ ! -f /usr/lib/libudev.so.0 ] && [ -f /usr/lib/libudev.so.1 ]; then
+            sudo ln -sf libudev.so.1 /usr/lib/libudev.so.0
+        fi
+        
+        # Hardware permissions for the tc user
         sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
         
-        # Runtime dir
+        # XDG Environment
         export XDG_RUNTIME_DIR=/tmp/runtime-tc
         mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
         
-        echo "[BOOT] Launching startx..." | tee /dev/console
-        startx
+        echo "[BOOT] Starting Graphical Subsystem..." | tee /dev/console
+        # Run startx normally, it will choose the best VT and source .xsession
+        startx 2>&1 | tee /tmp/startx.log
         
-        echo "[BOOT] GUI Exited. Fallback shell active." | tee /dev/console
+        echo "[BOOT] GUI exited. Falling back to recovery shell." | tee /dev/console
         exec /bin/sh
         ;;
 esac
 PROFILE_EOF
 chmod +x home/tc/.profile
 cp -p home/tc/.profile home/tc/.xsession etc/skel/
+chown -R 1000:50 home/tc etc/skel 
 echo "tc ALL=(ALL) NOPASSWD: ALL" >> etc/sudoers
 
 # 5. Install Tauri App
@@ -187,7 +191,7 @@ echo "Installing Dashboard..."
 mkdir -p opt/d-secure-ui
 cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
 chmod +x "opt/d-secure-ui/app"
-chown -R 1001:50 opt/d-secure-ui home/tc
+chown -R 1000:50 opt/d-secure-ui
 
 # 6. Repack (XZ-2 for speed)
 echo "[4/4] Repacking..."
