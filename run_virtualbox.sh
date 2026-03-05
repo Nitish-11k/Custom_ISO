@@ -6,6 +6,30 @@
 VM_NAME="${1:-DSecure_OS_Test}"
 ISO_PATH="$(pwd)/custom.iso"
 
+# --- KVM Conflict Check ---
+if lsmod | grep -q "kvm_intel" || lsmod | grep -q "kvm_amd"; then
+    echo "!!! CONFLICT DETECTED: KVM is currently active !!!"
+    echo "VirtualBox cannot run while QEMU/KVM is active."
+    echo ""
+    echo "To fix this, please run these commands:"
+    echo "  1. Close QEMU if it's open"
+    echo "  2. Run: sudo modprobe -r kvm_intel  (or kvm_amd)"
+    echo "  3. Run: sudo modprobe -r kvm"
+    echo ""
+    read -p "Would you like me to try killing QEMU and unloading KVM for you? (y/n) " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "Stopping QEMU..."
+        pkill -f qemu-system-x86_64 || true
+        echo "Unloading KVM modules..."
+        sudo modprobe -r kvm_intel 2>/dev/null || sudo modprobe -r kvm_amd 2>/dev/null || true
+        sudo modprobe -r kvm 2>/dev/null || true
+    else
+        echo "Continuing with VirtualBox might fail..."
+    fi
+fi
+# --------------------------
+
 if [ ! -f "$ISO_PATH" ]; then
     echo "ERROR: custom.iso not found! Run ./remaster_tc.sh first."
     exit 1
