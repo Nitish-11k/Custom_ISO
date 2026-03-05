@@ -150,7 +150,8 @@ case "$(tty)" in
         sudo chmod 666 /dev/input/event* /dev/dri/* 2>/dev/null || true
         
         echo "[BOOT] Starting GUI..." > /dev/console
-        startx >/dev/null 2>&1
+        # Start X in foreground, log to file for debugging if it fails
+        startx >/tmp/xorg_start.log 2>&1
         
         # Fallback shell if GUI exits
         echo "GUI Session Terminated. Dropping to shell." > /dev/console
@@ -185,9 +186,13 @@ if [ -f "/home/nickx/Downloads/parrot.jpg" ] && [ -f "/home/nickx/Downloads/enha
     convert "/home/nickx/Downloads/parrot.jpg" \( "/home/nickx/Downloads/enhance.png" -resize 800x \) -gravity center -composite "$ISO_ROOT/boot/grub/background.jpg"
 fi
 
-# Use standard config file from Downloads
+# Use standard config file from Downloads but PATCH it for EFI compatibility
 if [ -f "/home/nickx/Downloads/grub_cfg" ]; then
     cp "/home/nickx/Downloads/grub_cfg" "$ISO_ROOT/boot/grub/grub.cfg"
+    # Ensure EFI modules are present for the background image
+    sed -i 's/insmod vbe/insmod vbe\ninsmod efi_gop\ninsmod efi_uga/g' "$ISO_ROOT/boot/grub/grub.cfg"
+    # Remove the 'nomodeset' and other flags that break modern VM/Laptop graphics
+    sed -i 's/nomodeset acpi=off noapic nolapic intel_idle.max_cstate=0 idle=poll//g' "$ISO_ROOT/boot/grub/grub.cfg"
 else
     # Minimal fallback config if file missing
     cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'EOF'
@@ -197,10 +202,15 @@ insmod all_video
 insmod gfxterm
 insmod png
 insmod jpeg
+insmod efi_gop
+insmod efi_uga
 terminal_output gfxterm
 background_image /boot/grub/background.jpg
+set menu_color_normal=white/black
+set menu_color_highlight=black/light-gray
+
 menuentry "D-Secure Drive Eraser" {
-    linux /boot/vmlinuz64 quiet loglevel=3 vga=791 nomodeset acpi=off noapic nolapic laptop
+    linux /boot/vmlinuz64 quiet loglevel=3 vga=791 noswap laptop
     initrd /boot/core_custom.gz /boot/modules64.gz
 }
 EOF
