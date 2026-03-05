@@ -55,7 +55,7 @@ sed -i 's|tty1::respawn:/sbin/getty.*|tty1::once:/bin/login -f tc </dev/tty1 >/d
 echo "Xorg" > etc/sysconfig/Xserver
 chmod 4755 usr/local/lib/xorg/Xorg 2>/dev/null || true
 mkdir -p etc/X11
-echo "allowed_users=anybody\nneeds_root_rights=yes" > etc/X11/Xwrapper.config
+printf "allowed_users=anybody\nneeds_root_rights=yes\n" > etc/X11/Xwrapper.config
 
 # Udev rules for hardware (Display, Input, Disks)
 cat > etc/udev/rules.d/99-dsecure.rules << 'UDEV_EOF'
@@ -117,16 +117,16 @@ export WEBKIT_DISABLE_SANDBOX=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 
-# WAIT FOR X SERVER (Improved)
-echo "[GUI] Waiting for X server on $DISPLAY..." | tee /dev/console
+# WAIT FOR X SERVER (Check socket directly as xset might be missing)
+echo "[GUI] Waiting for X server socket /tmp/.X11-unix/X0..." | tee /dev/console
 RETRY=0
-while [ $RETRY -lt 20 ]; do
-    if xset q >/dev/null 2>&1; then
-        echo "[GUI] X server detected!" | tee /dev/console
+while [ $RETRY -lt 40 ]; do
+    if [ -S /tmp/.X11-unix/X0 ]; then
+        echo "[GUI] X server socket detected!" | tee /dev/console
         break
     fi
     RETRY=$((RETRY+1))
-    sleep 0.5
+    sleep 0.25
 done
 
 # Launch Window Manager
@@ -135,7 +135,7 @@ openbox --config-file $HOME/.config/openbox/rc.xml &
 sleep 2
 
 # Background and cleanup
-xsetroot -cursor_name left_ptr -solid "#ffffff" || true
+[ -f /usr/local/bin/xsetroot ] && xsetroot -cursor_name left_ptr -solid "#ffffff" || true
 sudo pkill -TERM tiny_splash 2>/dev/null || true
 
 APP_BIN="/opt/d-secure-ui/app"
@@ -146,7 +146,6 @@ LOADER="$LIB_PATH/ld-linux-x86-64.so.2"
 if [ -f "$APP_BIN" ]; then
     echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
     cd /opt/d-secure-ui
-    # Use bundled loader + combined library path (Bundle + System)
     if [ -f "$LOADER" ]; then
         dbus-run-session "$LOADER" --library-path "$LIB_PATH:$SYSTEM_LIBS" "$APP_BIN" 2>&1 | tee /tmp/app.log || {
             echo "[ERROR] App crashed. Logs below:" | tee /dev/console
@@ -221,11 +220,12 @@ echo "Bundling host libraries for compatibility..."
 HOST_LIB_DIR="/lib/x86_64-linux-gnu"
 HOST_USR_LIB="/usr/lib/x86_64-linux-gnu"
 
-# Essential list to avoid "version not found" or "no such file"
+# Comprehensive list to avoid dependency chain issues
 LIBS="libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 
       libatomic.so.1 libwebpdemux.so.2 libgdk-3.so.0 libgtk-3.so.0 libwebkit2gtk-4.1.so.0 
       libjavascriptcoregtk-4.1.so.0 libsoup-3.0.so.0 libenchant-2.so.2 libsecret-1.so.0
-      libharfbuzz-icu.so.0 libopenjp2.so.7 liblcms2.so.2"
+      libharfbuzz-icu.so.0 libopenjp2.so.7 liblcms2.so.2 libsystemd.so.0 liblzma.so.5 
+      libzstd.so.1 libgcrypt.so.20 libcap.so.2 libgpg-error.so.0 libdbus-1.so.3"
 
 for lib in $LIBS; do
     if [ -f "$HOST_LIB_DIR/$lib" ]; then
