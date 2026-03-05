@@ -28,3 +28,4 @@ grub_cfg
 *.sh.old
 *.sh.bak
 build.pid
+tc_work_*
