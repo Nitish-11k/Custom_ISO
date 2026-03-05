@@ -100,104 +100,61 @@ cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
 </openbox_config>
 OPENBOX_EOF
 
-# .xsession — Reliable GUI startup client commands
+# .xsession — Reliable GUI start (White background to hide flickers)
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
-# REDIRECT EVERYTHING TO SERIAL CONSOLE FOR DEBUGGING
-exec >/dev/ttyS0 2>&1
-set -x
-
-echo "[GUI] Starting .xsession session..."
-
-# Set up environment
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/tmp/runtime-tc
-export HOME=/home/tc
-export USER=tc
-export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib
+mkdir -p /tmp/runtime-tc && chmod 700 /tmp/runtime-tc
 
-# Set cursor and background (Pure white to hide edge flickers)
-xsetroot -cursor_name left_ptr -solid "#ffffff" -display :0 || true
+# Start Xorg in background securely
+sudo /usr/local/lib/xorg/Xorg -nolisten tcp vt1 >/dev/null 2>&1 &
+X_PID=$!
 
-# Kill splash now that GUI is taking over
-sudo pkill -TERM tiny_splash 2>/dev/null || true
+# Wait for X
+for i in $(seq 1 60); do
+    if xrandr --display :0 >/dev/null 2>&1; then break; fi
+    sleep 0.2
+done
 
-# Launch Window Manager
-echo "[GUI] Starting Openbox..."
+# UI Setup (White background hides black edge flickering)
+xsetroot -cursor_name left_ptr -solid "#ffffff" -display :0
+sudo pkill tiny_splash 2>/dev/null || true
+
+# Window Manager & App
 openbox --config-file $HOME/.config/openbox/rc.xml &
-WM_PID=$!
-
-# Wait for session to stabilize
-sleep 2
-
-# Launch Tauri Dashboard in the foreground
-if [ -f /opt/d-secure-ui/app ]; then
-    echo "[GUI] Launching Tauri Dashboard..."
-    cd /opt/d-secure-ui
-    # dbus-run-session ensures the app can communicate with system services
-    dbus-run-session ./app || {
-        echo "[GUI] App failed to start! Dropping to terminal fallback."
-        aterm -title "D-Secure DEBUG Term" -geometry 80x24+0+0
-    }
-else
-    echo "[ERROR] Dashboard binary missing at /opt/d-secure-ui/app!"
-    aterm -title "ERROR: Binary Missing" -geometry 80x24+0+0
-fi
-
-echo "[GUI] Dashboard exited. Ending session."
+sleep 1
+cd /opt/d-secure-ui
+dbus-run-session ./app
 XSESSION_EOF
 chmod +x home/tc/.xsession
 
 # .profile — Autostart on TTY1 only
 cat > home/tc/.profile << 'PROFILE_EOF'
 #!/bin/sh
-# REDIRECT TO SERIAL CONSOLE
-exec >/dev/ttyS0 2>&1
-set -x
-
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
-export HOME=/home/tc
-export USER=tc
+export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib
 
 case "$(tty)" in
-    /dev/tty1|/dev/vc/1|/dev/ttyS0)
+    /dev/tty1|/dev/vc/1)
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
-        
-        # Ensure we can see output on both screen and serial
-        echo "[BOOT] Initializing D-Secure System Components..." | tee /dev/console
-        
-        # Probing and loading crucial modules
+        echo "[BOOT] Initializing D-Secure..." > /dev/console
         sudo depmod -a
         for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
-        
         sudo udevadm trigger && sudo udevadm settle --timeout=3
-        
-        # Network and DBus Prep
         sudo ifconfig lo 127.0.0.1 up
         sudo udhcpc -b -i eth0 >/dev/null 2>&1 &
+        sudo chmod 666 /dev/input/event* /dev/dri/* 2>/dev/null || true
         
-        # MACHINE ID is often required by newer GTK/WebKit
-        if [ ! -f /etc/machine-id ]; then
-            sudo dbus-uuidgen --ensure=/etc/machine-id
-            sudo dbus-uuidgen --ensure
-        fi
+        echo "[BOOT] Starting GUI..." > /dev/console
+        # Start X in foreground, log to file for debugging if it fails
+        startx >/tmp/xorg_start.log 2>&1
         
-        # Permissions for Graphics and Input
-        sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
-        
-        # Prepare runtime directory BEFORE startx
-        export XDG_RUNTIME_DIR=/tmp/runtime-tc
-        mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
-        
-        echo "[BOOT] Initializing GUI via startx..." | tee /dev/console
-        # startx will read .xsession and manage Xorg for us
-        startx 2>&1 | tee /tmp/startx.log > /dev/ttyS0
-        
-        # If GUI exits, drop to a clean shell
-        echo "[BOOT] GUI Session ended. Dropping to fallback shell." | tee /dev/console
+        # Fallback shell if GUI exits
+        echo "GUI Session Terminated. Dropping to shell." > /dev/console
         exec /bin/sh
         ;;
 esac
@@ -236,8 +193,6 @@ if [ -f "/home/nickx/Downloads/grub_cfg" ]; then
     sed -i 's/insmod vbe/insmod vbe\ninsmod efi_gop\ninsmod efi_uga/g' "$ISO_ROOT/boot/grub/grub.cfg"
     # Remove the 'nomodeset' and other flags that break modern VM/Laptop graphics
     sed -i 's/nomodeset acpi=off noapic nolapic intel_idle.max_cstate=0 idle=poll//g' "$ISO_ROOT/boot/grub/grub.cfg"
-    # Enable Serial logging for host-side debug
-    sed -i 's/linux \/boot\/vmlinuz64/linux \/boot\/vmlinuz64 console=tty0 console=ttyS0/g' "$ISO_ROOT/boot/grub/grub.cfg"
 else
     # Minimal fallback config if file missing
     cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'EOF'
@@ -255,7 +210,7 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "D-Secure Drive Eraser" {
-    linux /boot/vmlinuz64 console=tty0 console=ttyS0 loglevel=7 noswap laptop intel_idle.max_cstate=0 idle=poll
+    linux /boot/vmlinuz64 quiet loglevel=3 vga=791 noswap laptop
     initrd /boot/core_custom.gz /boot/modules64.gz
 }
 EOF
