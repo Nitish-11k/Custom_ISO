@@ -100,61 +100,80 @@ cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
 </openbox_config>
 OPENBOX_EOF
 
-# .xsession — Reliable GUI start (White background to hide flickers)
+# .xsession — GUI Startup Client
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
-export DISPLAY=:0
+# Compatibility flags for WebKitGTK in VMs
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export LIBGL_ALWAYS_SOFTWARE=1
+export GDK_BACKEND=x11
 export XDG_RUNTIME_DIR=/tmp/runtime-tc
-mkdir -p /tmp/runtime-tc && chmod 700 /tmp/runtime-tc
 
-# Start Xorg in background securely
-sudo /usr/local/lib/xorg/Xorg -nolisten tcp vt1 >/dev/null 2>&1 &
-X_PID=$!
-
-# Wait for X
-for i in $(seq 1 60); do
-    if xrandr --display :0 >/dev/null 2>&1; then break; fi
-    sleep 0.2
-done
-
-# UI Setup (White background hides black edge flickering)
-xsetroot -cursor_name left_ptr -solid "#ffffff" -display :0
-sudo pkill tiny_splash 2>/dev/null || true
-
-# Window Manager & App
+echo "[GUI] Starting Window Manager..."
 openbox --config-file $HOME/.config/openbox/rc.xml &
-sleep 1
-cd /opt/d-secure-ui
-dbus-run-session ./app
+
+# Set pure white background
+xsetroot -cursor_name left_ptr -solid "#ffffff" || true
+
+# Stop splash screen
+sudo pkill -TERM tiny_splash 2>/dev/null || true
+
+sleep 2
+
+# Launch Dashboard
+if [ -f /opt/d-secure-ui/app ]; then
+    echo "[GUI] Launching Tauri Dashboard..."
+    cd /opt/d-secure-ui
+    dbus-run-session ./app || aterm -title "D-Secure DEBUG"
+else
+    echo "[ERROR] Dashboard binary not found!"
+    aterm -title "ERROR: Missing Binary"
+fi
 XSESSION_EOF
 chmod +x home/tc/.xsession
 
-# .profile — Autostart on TTY1 only
+# .profile — Autostart logic
 cat > home/tc/.profile << 'PROFILE_EOF'
 #!/bin/sh
+# Redirect boot logs to serial for debug
+exec >/dev/ttyS0 2>&1
+set -x
+
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
-export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib
+export HOME=/home/tc
+export USER=tc
 
 case "$(tty)" in
     /dev/tty1|/dev/vc/1)
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
-        echo "[BOOT] Initializing D-Secure..." > /dev/console
+        
+        echo "[BOOT] Loading Drivers..." | tee /dev/console
         sudo depmod -a
         for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
         sudo udevadm trigger && sudo udevadm settle --timeout=3
-        sudo ifconfig lo 127.0.0.1 up
-        sudo udhcpc -b -i eth0 >/dev/null 2>&1 &
-        sudo chmod 666 /dev/input/event* /dev/dri/* 2>/dev/null || true
         
-        echo "[BOOT] Starting GUI..." > /dev/console
-        # Start X in foreground, log to file for debugging if it fails
-        startx >/tmp/xorg_start.log 2>&1
+        # Start DBus (Mandatory for Tauri)
+        if [ -f /usr/local/etc/init.d/dbus ]; then
+            sudo /usr/local/etc/init.d/dbus start | tee /dev/console
+        fi
         
-        # Fallback shell if GUI exits
-        echo "GUI Session Terminated. Dropping to shell." > /dev/console
+        # Machine ID
+        [ -f /etc/machine-id ] || sudo dbus-uuidgen --ensure=/etc/machine-id
+        
+        # Hardware permissions
+        sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
+        
+        # Runtime dir
+        export XDG_RUNTIME_DIR=/tmp/runtime-tc
+        mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
+        
+        echo "[BOOT] Launching startx..." | tee /dev/console
+        startx
+        
+        echo "[BOOT] GUI Exited. Fallback shell active." | tee /dev/console
         exec /bin/sh
         ;;
 esac
@@ -193,6 +212,11 @@ if [ -f "/home/nickx/Downloads/grub_cfg" ]; then
     sed -i 's/insmod vbe/insmod vbe\ninsmod efi_gop\ninsmod efi_uga/g' "$ISO_ROOT/boot/grub/grub.cfg"
     # Remove the 'nomodeset' and other flags that break modern VM/Laptop graphics
     sed -i 's/nomodeset acpi=off noapic nolapic intel_idle.max_cstate=0 idle=poll//g' "$ISO_ROOT/boot/grub/grub.cfg"
+    # Enable Serial logging for host-side debug
+    sed -i 's/linux \/boot\/vmlinuz64/linux \/boot\/vmlinuz64 console=tty0 console=ttyS0/g' "$ISO_ROOT/boot/grub/grub.cfg"
+    # Remove quiet and vga bits
+    sed -i 's/quiet//g' "$ISO_ROOT/boot/grub/grub.cfg"
+    sed -i 's/vga=791//g' "$ISO_ROOT/boot/grub/grub.cfg"
 else
     # Minimal fallback config if file missing
     cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'EOF'
@@ -210,7 +234,7 @@ set menu_color_normal=white/black
 set menu_color_highlight=black/light-gray
 
 menuentry "D-Secure Drive Eraser" {
-    linux /boot/vmlinuz64 quiet loglevel=3 vga=791 noswap laptop
+    linux /boot/vmlinuz64 console=tty0 console=ttyS0 loglevel=7 noswap laptop
     initrd /boot/core_custom.gz /boot/modules64.gz
 }
 EOF
