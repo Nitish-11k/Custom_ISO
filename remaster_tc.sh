@@ -103,7 +103,7 @@ OPENBOX_EOF
 # .xsession — GUI Client Sequence
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
-# REDIRECT ERRORS TO SERIAL & SCREEN
+# REDIRECT ALL LOGS
 exec 2>&1 | tee /tmp/xsession.log
 
 export HOME=/home/tc
@@ -117,47 +117,47 @@ export WEBKIT_DISABLE_SANDBOX=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 
-# WAIT FOR X SERVER (Crucial fix for "Failed to open display")
-echo "[GUI] Waiting for X server..." | tee /dev/console
-for i in $(seq 1 30); do
+# WAIT FOR X SERVER (Improved)
+echo "[GUI] Waiting for X server on $DISPLAY..." | tee /dev/console
+RETRY=0
+while [ $RETRY -lt 20 ]; do
     if xset q >/dev/null 2>&1; then
-        echo "[GUI] X server is ready!" | tee /dev/console
+        echo "[GUI] X server detected!" | tee /dev/console
         break
     fi
+    RETRY=$((RETRY+1))
     sleep 0.5
 done
 
+# Launch Window Manager
 echo "[GUI] Starting Openbox..." | tee /dev/console
 openbox --config-file $HOME/.config/openbox/rc.xml &
+sleep 2
 
-# Set background
+# Background and cleanup
 xsetroot -cursor_name left_ptr -solid "#ffffff" || true
 sudo pkill -TERM tiny_splash 2>/dev/null || true
 
-# Give WM time to settle
-sleep 2
-
 APP_BIN="/opt/d-secure-ui/app"
 LIB_PATH="/opt/d-secure-ui/lib"
+SYSTEM_LIBS="/usr/local/lib:/usr/lib:/lib"
 LOADER="$LIB_PATH/ld-linux-x86-64.so.2"
 
 if [ -f "$APP_BIN" ]; then
-    echo "[GUI] Launching Dashboard (with bundled GLIBC)..." | tee /dev/console
+    echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
     cd /opt/d-secure-ui
-    
-    # BUNDLE RUN: Use host loader to bypass VM's old glibc
+    # Use bundled loader + combined library path (Bundle + System)
     if [ -f "$LOADER" ]; then
-        dbus-run-session "$LOADER" --library-path "$LIB_PATH" "$APP_BIN" 2>&1 | tee /tmp/app.log || {
-            echo "[ERROR] Dashboard failed. Opening debug console." | tee /dev/console
-            aterm -title "App Error Log" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
+        dbus-run-session "$LOADER" --library-path "$LIB_PATH:$SYSTEM_LIBS" "$APP_BIN" 2>&1 | tee /tmp/app.log || {
+            echo "[ERROR] App crashed. Logs below:" | tee /dev/console
+            aterm -title "DEBUG: App Error" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
         }
     else
-        # Fallback to standard run if loader missing
-        dbus-run-session "$APP_BIN" 2>&1 | tee /tmp/app.log || aterm -title "App Error" -e "cat /tmp/app.log; exec sh"
+        dbus-run-session "$APP_BIN" 2>&1 | tee /tmp/app.log || aterm -title "ERROR" -e "cat /tmp/app.log; exec sh"
     fi
 else
-    echo "[ERROR] Dashboard binary missing!" | tee /dev/console
-    aterm -title "ERROR: Binary Not Found"
+    echo "[ERROR] Dashboard binary missing at $APP_BIN" | tee /dev/console
+    aterm -title "ERROR: Missing Binary"
 fi
 XSESSION_EOF
 chmod +x home/tc/.xsession
@@ -212,23 +212,32 @@ echo "tc ALL=(ALL) NOPASSWD: ALL" >> etc/sudoers
 
 # 5. Install Tauri App
 echo "Installing Dashboard..."
-mkdir -p opt/d-secure-ui
-cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
-# Dynamic Loader and Library Path Fix (Bundle host GLIBC 2.39)
 mkdir -p opt/d-secure-ui/lib
+cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
 ln -sf lib lib64
 
-# Host libs (Essential to avoid GLIBC mismatch)
+# Bundle host libraries (GLIBC 2.39 + Support Libs)
+echo "Bundling host libraries for compatibility..."
 HOST_LIB_DIR="/lib/x86_64-linux-gnu"
-for lib in libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libatomic.so.1 libwebpdemux.so.2; do
+HOST_USR_LIB="/usr/lib/x86_64-linux-gnu"
+
+# Essential list to avoid "version not found" or "no such file"
+LIBS="libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 
+      libatomic.so.1 libwebpdemux.so.2 libgdk-3.so.0 libgtk-3.so.0 libwebkit2gtk-4.1.so.0 
+      libjavascriptcoregtk-4.1.so.0 libsoup-3.0.so.0 libenchant-2.so.2 libsecret-1.so.0
+      libharfbuzz-icu.so.0 libopenjp2.so.7 liblcms2.so.2"
+
+for lib in $LIBS; do
     if [ -f "$HOST_LIB_DIR/$lib" ]; then
-        echo "Bundling $lib from host..."
         cp "$HOST_LIB_DIR/$lib" "opt/d-secure-ui/lib/$lib"
+    elif [ -f "$HOST_USR_LIB/$lib" ]; then
+        cp "$HOST_USR_LIB/$lib" "opt/d-secure-ui/lib/$lib"
+    else
+        echo "Warning: Host library $lib not found!"
     fi
 done
 
 chmod +x opt/d-secure-ui/app opt/d-secure-ui/lib/ld-linux-x86-64.so.2 2>/dev/null || true
-
 chown -R 1000:50 home/tc etc/skel opt/d-secure-ui
 
 # 6. Repack (XZ-2 for speed)
