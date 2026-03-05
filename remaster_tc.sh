@@ -111,11 +111,15 @@ export USER=tc
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/tmp/runtime-tc
 
-# WebKit/Tauri compatibility flags
+# WebKit/Tauri compatibility flags (CRITICAL for VMs)
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_SANDBOX=1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
+
+# Point WebKit to our bundled helper processes
+export WEBKIT_EXEC_PATH=/opt/d-secure-ui/lib/webkit2gtk-4.1
 
 # WAIT FOR X SERVER (Check socket directly as xset might be missing)
 echo "[GUI] Waiting for X server socket /tmp/.X11-unix/X0..." | tee /dev/console
@@ -220,12 +224,13 @@ echo "Bundling host libraries for compatibility..."
 HOST_LIB_DIR="/lib/x86_64-linux-gnu"
 HOST_USR_LIB="/usr/lib/x86_64-linux-gnu"
 
-# Comprehensive list to avoid dependency chain issues
+# Complete list to avoid dependency chain issues & White Screens
 LIBS="libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 
       libatomic.so.1 libwebpdemux.so.2 libgdk-3.so.0 libgtk-3.so.0 libwebkit2gtk-4.1.so.0 
       libjavascriptcoregtk-4.1.so.0 libsoup-3.0.so.0 libenchant-2.so.2 libsecret-1.so.0
       libharfbuzz-icu.so.0 libopenjp2.so.7 liblcms2.so.2 libsystemd.so.0 liblzma.so.5 
-      libzstd.so.1 libgcrypt.so.20 libcap.so.2 libgpg-error.so.0 libdbus-1.so.3"
+      libzstd.so.1 libgcrypt.so.20 libcap.so.2 libgpg-error.so.0 libdbus-1.so.3
+      libepoxy.so.0 libfontconfig.so.1 libxkbcommon.so.0"
 
 for lib in $LIBS; do
     if [ -f "$HOST_LIB_DIR/$lib" ]; then
@@ -236,6 +241,12 @@ for lib in $LIBS; do
         echo "Warning: Host library $lib not found!"
     fi
 done
+
+# Copy WebKit helper processes (Mandatory for rendering the actual web view)
+if [ -d "$HOST_USR_LIB/webkit2gtk-4.1" ]; then
+    echo "Bundling WebKit helper processes..."
+    cp -r "$HOST_USR_LIB/webkit2gtk-4.1" "opt/d-secure-ui/lib/"
+fi
 
 chmod +x opt/d-secure-ui/app opt/d-secure-ui/lib/ld-linux-x86-64.so.2 2>/dev/null || true
 chown -R 1000:50 home/tc etc/skel opt/d-secure-ui
