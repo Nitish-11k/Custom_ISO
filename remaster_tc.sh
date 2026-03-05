@@ -100,61 +100,94 @@ cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
 </openbox_config>
 OPENBOX_EOF
 
-# .xsession — Reliable GUI start (White background to hide flickers)
+# .xsession — Reliable GUI startup client commands
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
+# REDIRECT EVERYTHING TO SERIAL CONSOLE FOR DEBUGGING
+exec >/dev/ttyS0 2>&1
+set -x
+
+echo "[GUI] Starting .xsession session..."
+
+# Set up environment
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/tmp/runtime-tc
-mkdir -p /tmp/runtime-tc && chmod 700 /tmp/runtime-tc
+export HOME=/home/tc
+export USER=tc
+export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib
 
-# Start Xorg in background securely
-sudo /usr/local/lib/xorg/Xorg -nolisten tcp vt1 >/dev/null 2>&1 &
-X_PID=$!
+# Set cursor and background (Pure white to hide edge flickers)
+xsetroot -cursor_name left_ptr -solid "#ffffff" -display :0 || true
 
-# Wait for X
-for i in $(seq 1 60); do
-    if xrandr --display :0 >/dev/null 2>&1; then break; fi
-    sleep 0.2
-done
+# Kill splash now that GUI is taking over
+sudo pkill -TERM tiny_splash 2>/dev/null || true
 
-# UI Setup (White background hides black edge flickering)
-xsetroot -cursor_name left_ptr -solid "#ffffff" -display :0
-sudo pkill tiny_splash 2>/dev/null || true
-
-# Window Manager & App
+# Launch Window Manager
+echo "[GUI] Starting Openbox..."
 openbox --config-file $HOME/.config/openbox/rc.xml &
-sleep 1
-cd /opt/d-secure-ui
-dbus-run-session ./app
+WM_PID=$!
+
+# Wait for session to stabilize
+sleep 2
+
+# Launch Tauri Dashboard in the foreground
+if [ -f /opt/d-secure-ui/app ]; then
+    echo "[GUI] Launching Tauri Dashboard..."
+    cd /opt/d-secure-ui
+    # dbus-run-session ensures the app can communicate with system services
+    dbus-run-session ./app
+else
+    echo "[ERROR] Dashboard binary missing at /opt/d-secure-ui/app!"
+    aterm -title "ERROR: Binary Missing" -geometry 80x24+0+0
+fi
+
+echo "[GUI] Dashboard exited. Ending session."
 XSESSION_EOF
 chmod +x home/tc/.xsession
 
 # .profile — Autostart on TTY1 only
 cat > home/tc/.profile << 'PROFILE_EOF'
 #!/bin/sh
+# REDIRECT TO SERIAL CONSOLE
+exec >/dev/ttyS0 2>&1
+set -x
+
 export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
-export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib
+export HOME=/home/tc
+export USER=tc
 
 case "$(tty)" in
-    /dev/tty1|/dev/vc/1)
+    /dev/tty1|/dev/vc/1|/dev/ttyS0)
         [ -f /tmp/.boot_done ] && return
         touch /tmp/.boot_done
-        echo "[BOOT] Initializing D-Secure..." > /dev/console
+        
+        echo "[BOOT] Initializing D-Secure System Components..."
+        
+        # Probing and loading crucial modules
         sudo depmod -a
         for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
             sudo modprobe "$mod" 2>/dev/null || true
         done
+        
         sudo udevadm trigger && sudo udevadm settle --timeout=3
+        
+        # Network setup
         sudo ifconfig lo 127.0.0.1 up
         sudo udhcpc -b -i eth0 >/dev/null 2>&1 &
-        sudo chmod 666 /dev/input/event* /dev/dri/* 2>/dev/null || true
         
-        echo "[BOOT] Starting GUI..." > /dev/console
-        # Start X in foreground, log to file for debugging if it fails
-        startx >/tmp/xorg_start.log 2>&1
+        # Permissions for Graphics and Input
+        sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
         
-        # Fallback shell if GUI exits
-        echo "GUI Session Terminated. Dropping to shell." > /dev/console
+        # Prepare runtime directory
+        export XDG_RUNTIME_DIR=/tmp/runtime-tc
+        mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
+        
+        echo "[BOOT] Initializing GUI via startx..."
+        # startx will read .xsession and manage Xorg for us
+        startx
+        
+        # If GUI exits, drop to a clean shell
+        echo "[BOOT] GUI Session ended. Dropping to fallback shell."
         exec /bin/sh
         ;;
 esac
