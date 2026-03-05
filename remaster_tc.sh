@@ -103,10 +103,9 @@ OPENBOX_EOF
 # .xsession — GUI Client Sequence
 cat > home/tc/.xsession << 'XSESSION_EOF'
 #!/bin/sh
-# REDIRECT ERRORS (Crucial for debugging Black Screen)
+# REDIRECT ERRORS TO SERIAL & SCREEN
 exec 2>&1 | tee /tmp/xsession.log
 
-# Set environment
 export HOME=/home/tc
 export USER=tc
 export DISPLAY=:0
@@ -118,6 +117,16 @@ export WEBKIT_DISABLE_SANDBOX=1
 export LIBGL_ALWAYS_SOFTWARE=1
 export GDK_BACKEND=x11
 
+# WAIT FOR X SERVER (Crucial fix for "Failed to open display")
+echo "[GUI] Waiting for X server..." | tee /dev/console
+for i in $(seq 1 30); do
+    if xset q >/dev/null 2>&1; then
+        echo "[GUI] X server is ready!" | tee /dev/console
+        break
+    fi
+    sleep 0.5
+done
+
 echo "[GUI] Starting Openbox..." | tee /dev/console
 openbox --config-file $HOME/.config/openbox/rc.xml &
 
@@ -125,17 +134,27 @@ openbox --config-file $HOME/.config/openbox/rc.xml &
 xsetroot -cursor_name left_ptr -solid "#ffffff" || true
 sudo pkill -TERM tiny_splash 2>/dev/null || true
 
-# Give services time to settle (DBus, Openbox)
-sleep 5
+# Give WM time to settle
+sleep 2
 
-if [ -f /opt/d-secure-ui/app ]; then
-    echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
+APP_BIN="/opt/d-secure-ui/app"
+LIB_PATH="/opt/d-secure-ui/lib"
+LOADER="$LIB_PATH/ld-linux-x86-64.so.2"
+
+if [ -f "$APP_BIN" ]; then
+    echo "[GUI] Launching Dashboard (with bundled GLIBC)..." | tee /dev/console
     cd /opt/d-secure-ui
-    # dbus-run-session is mandatory correctly for Tauri/WebView2 communication
-    dbus-run-session /opt/d-secure-ui/app 2>&1 | tee /tmp/app.log || {
-        echo "[ERROR] Dashboard app failed. See debug console." | tee /dev/console
-        aterm -title "App Error Log" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
-    }
+    
+    # BUNDLE RUN: Use host loader to bypass VM's old glibc
+    if [ -f "$LOADER" ]; then
+        dbus-run-session "$LOADER" --library-path "$LIB_PATH" "$APP_BIN" 2>&1 | tee /tmp/app.log || {
+            echo "[ERROR] Dashboard failed. Opening debug console." | tee /dev/console
+            aterm -title "App Error Log" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
+        }
+    else
+        # Fallback to standard run if loader missing
+        dbus-run-session "$APP_BIN" 2>&1 | tee /tmp/app.log || aterm -title "App Error" -e "cat /tmp/app.log; exec sh"
+    fi
 else
     echo "[ERROR] Dashboard binary missing!" | tee /dev/console
     aterm -title "ERROR: Binary Not Found"
@@ -195,19 +214,20 @@ echo "tc ALL=(ALL) NOPASSWD: ALL" >> etc/sudoers
 echo "Installing Dashboard..."
 mkdir -p opt/d-secure-ui
 cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
-chmod +x "opt/d-secure-ui/app"
-
-# Dynamic Loader Fix
+# Dynamic Loader and Library Path Fix (Bundle host GLIBC 2.39)
+mkdir -p opt/d-secure-ui/lib
 ln -sf lib lib64
 
-# Host libs
-HOST_PREFIX="/lib/x86_64-linux-gnu"
-for lib in libatomic.so.1 libwebpdemux.so.2; do
-    if [ ! -f "usr/lib/$lib" ] && [ -f "$HOST_PREFIX/$lib" ]; then
-        mkdir -p usr/local/lib
-        cp "$HOST_PREFIX/$lib" "usr/local/lib/$lib"
+# Host libs (Essential to avoid GLIBC mismatch)
+HOST_LIB_DIR="/lib/x86_64-linux-gnu"
+for lib in libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libatomic.so.1 libwebpdemux.so.2; do
+    if [ -f "$HOST_LIB_DIR/$lib" ]; then
+        echo "Bundling $lib from host..."
+        cp "$HOST_LIB_DIR/$lib" "opt/d-secure-ui/lib/$lib"
     fi
 done
+
+chmod +x opt/d-secure-ui/app opt/d-secure-ui/lib/ld-linux-x86-64.so.2 2>/dev/null || true
 
 chown -R 1000:50 home/tc etc/skel opt/d-secure-ui
 
