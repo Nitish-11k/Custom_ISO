@@ -13,6 +13,16 @@ if [ ! -f "$ISO" ]; then
     exit 1
 fi
 
+# --- KVM Check ---
+if ! lsmod | grep -q "kvm"; then
+    echo "KVM module not detected. Attempting to load..."
+    sudo modprobe kvm_intel 2>/dev/null || sudo modprobe kvm_amd 2>/dev/null || true
+    if ! lsmod | grep -q "kvm"; then
+        echo "WARNING: Failed to load KVM. QEMU might be slow!"
+    fi
+fi
+# -----------------
+
 exec qemu-system-x86_64 \
     -cdrom "$ISO" \
     -m 2048 \
