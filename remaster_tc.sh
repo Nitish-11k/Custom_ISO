@@ -1,308 +1,418 @@
 #!/bin/sh
 #
-# remaster_tc.sh - D-Secure Edition (DIRECT MOUNT STRATEGY)
+# remaster_tc.sh - Creates initramfs and prepares CDE folder for Tiny Core
 #
-# Optimized for speed (< 30s boot) and reliability.
-# Bypasses Tiny Core auto-detection bugs for Xorg and input devices.
-# Supports QEMU, VirtualBox, and Real Hardware.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Use a unique work dir to avoid permission issues with previous runs
-WORK_DIR="$SCRIPT_DIR/tc_work_$(date +%s)"
+WORK_DIR="$SCRIPT_DIR/tc_remaster_opt"
 EXT_DIR="$SCRIPT_DIR/tc_extensions"
 BASE_DIR="$SCRIPT_DIR/tc_base"
-ISO_ROOT="$SCRIPT_DIR/iso_root"
+ISO_ROOT="$SCRIPT_DIR/iso_root_opt"
 
-echo "=== Remastering Tiny Core Linux (D-Secure Edition) ==="
+echo "=== Remastering Tiny Core Linux (CDE Mode) ==="
 
-# 1. Cleanup old ISO files (not the work dir yet)
-rm -f "$ISO_ROOT/boot/core_custom.gz"
+# 0. Cleanup legacy
+sudo rm -rf "$ISO_ROOT" "$WORK_DIR"
 mkdir -p "$ISO_ROOT/boot"
 
-# 2. Unpack base
-echo "[1/4] Unpacking base system..."
+# 0.1 Copy GRUB and assets from existing iso_root (if available)
+if [ -d "$SCRIPT_DIR/iso_root" ]; then
+    echo "Migrating GRUB and assets from iso_root..."
+    mkdir -p "$ISO_ROOT"
+    cp -r "$SCRIPT_DIR/iso_root/boot/grub" "$ISO_ROOT/boot/" 2>/dev/null || true
+    # Also verify background image
+    [ -f "$ISO_ROOT/boot/grub/background.png" ] || cp "$SCRIPT_DIR/background.png" "$ISO_ROOT/boot/grub/background.png" 2>/dev/null || true
+fi
+
+# 1. Prepare CDE folder structure in iso_root
+echo "[1/4] Setting up CDE extensions (Optimized)..."
+mkdir -p "$ISO_ROOT/cde/optional"
+
+# HARDWARE SUPPORT TOGGLE (1 = Include all WiFi/LAN firmware, 0 = Extreme Minimal)
+INCLUDE_ALL_FIRMWARE=1
+
+# EXCLUSION LIST: Saves ~150MB+ if firmware is excluded
+# WE ARE NOW INCLUDING MESA AND LLVM as per diagnosis report (Required for WebKitGTK)
+# REMOVED python3.14, tcl8.6, tk8.6, and spirv-tools from exclusion for Dashboard migration
+EXCLUDE_PATTERN="none_to_exclude"
+
+if [ "$INCLUDE_ALL_FIRMWARE" -eq 0 ]; then
+    EXCLUDE_PATTERN="$EXCLUDE_PATTERN\|firmware-iwlwifi\|firmware-atheros\|firmware-broadcom\|firmware-rtlwifi\|firmware-rtl_nic"
+fi
+
+# Copy extensions and dep files, excluding the large ones
+ls -1 "$EXT_DIR"/*.tcz | grep -v "$EXCLUDE_PATTERN" | while read -r ext; do
+    cp "$ext" "$ISO_ROOT/cde/optional/"
+    base=$(basename "$ext")
+    [ -f "$EXT_DIR/$base.dep" ] && cp "$EXT_DIR/$base.dep" "$ISO_ROOT/cde/optional/" 2>/dev/null || true
+done
+find "$ISO_ROOT/cde" -type d -exec chmod 755 {} +
+find "$ISO_ROOT/cde" -type f -exec chmod 644 {} +
+
+# Create onboot.lst dynamically from the filtered list
+echo "Generating onboot.lst..."
+ls -1 "$ISO_ROOT/cde/optional"/*.tcz | xargs -n 1 basename > "$ISO_ROOT/cde/onboot.lst"
+
+# 2. Unpack corepure64.gz
+echo "[2/4] Unpacking primary rootfs..."
+rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
-zcat "$BASE_DIR/corepure64.gz" | cpio -i -H newc -d
+zcat "$BASE_DIR/corepure64.gz" | cpio -i -H newc -d 2>/dev/null
 
-# 3. Extract ALL extensions into the rootfs (The "Direct Mount" Fix)
-echo "[2/4] Pre-extracting extensions..."
-for ext in "$EXT_DIR"/*.tcz; do
-    [ -s "$ext" ] && unsquashfs -f -d "$WORK_DIR" "$ext" >/dev/null 2>&1 || true
+# 2.1 EMBED VITAL DRIVERS (Ensures hardware detection even if ISO mount fails)
+echo "   Embedding network, graphics, and firmware..."
+# Find all firmware and wireless/graphics cores
+VITAL_EXTS=$(ls "$EXT_DIR"/firmware-*.tcz "$EXT_DIR"/wireless-*.tcz "$EXT_DIR"/graphics-*.tcz "$EXT_DIR"/alsa-modules-*.tcz "$EXT_DIR"/ca-certificates.tcz 2>/dev/null | xargs -n 1 basename)
+for ext in $VITAL_EXTS; do
+    if [ -f "$EXT_DIR/$ext" ]; then
+        echo "     -> Unpacking $ext..."
+        # Use -f to overwrite, and || true to skip corrupted ones without failing the build
+        unsquashfs -f -d . "$EXT_DIR/$ext" >/dev/null 2>&1 || echo "        [!] Warning: $ext is corrupted or invalid, skipping."
+    fi
 done
 
-# Run ldconfig to fix library cache
-echo "Running ldconfig in rootfs..."
-ldconfig -r "$WORK_DIR" 2>/dev/null || true
+# 2.2 Add Power/Audio Management Permissions for 'tc' user
+mkdir -p "$WORK_DIR/etc/sudoers.d"
+echo "tc ALL=(ALL) NOPASSWD: /sbin/reboot, /sbin/poweroff, /sbin/halt, /sbin/shutdown" > "$WORK_DIR/etc/sudoers.d/tc"
+chmod 0440 "$WORK_DIR/etc/sudoers.d/tc"
 
-# 4. Branding & UI Setup
-echo "[3/4] Configuring UI and Autostart..."
-cd "$WORK_DIR"
+# Create Sudo wrappers so app's 'reboot' call works automatically
+mkdir -p "$WORK_DIR/usr/local/bin"
+printf "#!/bin/sh\nsudo /sbin/reboot\n" > "$WORK_DIR/usr/local/bin/reboot"
+printf "#!/bin/sh\nsudo /sbin/poweroff\n" > "$WORK_DIR/usr/local/bin/poweroff"
+chmod +x "$WORK_DIR/usr/local/bin/reboot" "$WORK_DIR/usr/local/bin/poweroff"
 
-# Install tiny_splash
-if [ -f "$SCRIPT_DIR/tiny_splash" ]; then
-    cp "$SCRIPT_DIR/tiny_splash" "sbin/tiny_splash"
-    chmod +x "sbin/tiny_splash"
-fi
-[ -f "$SCRIPT_DIR/splash_0.raw" ] && cp "$SCRIPT_DIR/splash_0.raw" . 2>/dev/null || true
+# Hardware group association
+sed -i 's/staff:x:50:tc/staff:x:50:tc,video,audio,input/g' "$WORK_DIR/etc/group"
 
-# Direct login on TTY1
-sed -i 's|tty1::respawn:/sbin/getty.*|tty1::once:/bin/login -f tc </dev/tty1 >/dev/tty1 2>\&1|' etc/inittab
+# 2.2 Add lib64 symlinks for binary compatibility
+ln -s lib "$WORK_DIR/lib64" 2>/dev/null || true
+mkdir -p "$WORK_DIR/usr"
+ln -s lib "$WORK_DIR/usr/lib64" 2>/dev/null || true
 
-# Xorg config bypass
-echo "Xorg" > etc/sysconfig/Xserver
-chmod 4755 usr/local/lib/xorg/Xorg 2>/dev/null || true
-mkdir -p etc/X11
-printf "allowed_users=anybody\nneeds_root_rights=yes\n" > etc/X11/Xwrapper.config
+# 2.2 Inject Framebuffer Splash at the very start of boot (before init text)
+echo "Injecting early splash into /init..."
+sed -i 's|^#!/bin/sh|#!/bin/sh\n/opt/fb_splash.sh \&|' "$WORK_DIR/init"
 
-# Udev rules for hardware (Display, Input, Disks)
-cat > etc/udev/rules.d/99-dsecure.rules << 'UDEV_EOF'
-KERNEL=="console", MODE="0666"
-KERNEL=="fb0", MODE="0666"
-KERNEL=="tty[0-9]*", MODE="0666"
-KERNEL=="event*", MODE="0666"
-KERNEL=="mouse*", MODE="0666"
-KERNEL=="uinput", MODE="0666"
-KERNEL=="sd[a-z]*|nvme*", MODE="0666", GROUP="disk"
-SUBSYSTEM=="input", MODE="0666"
-SUBSYSTEM=="usb", MODE="0666"
-SUBSYSTEM=="drm", MODE="0666"
-SUBSYSTEM=="graphics", MODE="0666"
-UDEV_EOF
+# 3. Configure Autostart
+echo "[3/4] Configuring autostart..."
 
-# Openbox config (Perfect Fullscreen, No flickering margins/dots)
-mkdir -p home/tc/.config/openbox
-cat > home/tc/.config/openbox/rc.xml << 'OPENBOX_EOF'
+# Create graphical startup script
+# FIX: Ensure /home/tc permissions are correct at runtime
+cat > "$WORK_DIR/opt/bootlocal.sh" <<EOF
+#!/bin/sh
+
+# 0. Launch Framebuffer Splash IMMEDIATELY (hides kernel text)
+echo "Launching FB splash..." >> /tmp/bootlog.txt
+/opt/fb_splash.sh &
+FB_SPLASH_PID=\$!
+echo "FB Splash PID: \$FB_SPLASH_PID" >> /tmp/bootlog.txt
+
+# Also hide cursor and clear console
+printf '\033[?25l' > /dev/tty1 2>/dev/null || true
+printf '\033[2J\033[H' > /dev/tty1 2>/dev/null || true
+
+# 1. Hardware discovery and module loading (Laptop Touchpad Fix)
+echo "Forcing hardware discovery..." >> /tmp/bootlog.txt
+/sbin/udevadm trigger
+/sbin/udevadm settle --timeout=10
+
+# Force load HID and I2C modules just in case (Critical for touchpads)
+modprobe i2c-hid-acpi 2>/dev/null || true
+modprobe hid-multitouch 2>/dev/null || true
+modprobe hid-generic 2>/dev/null || true
+modprobe evdev 2>/dev/null || true
+
+# 2. Fix permissions for input nodes and home
+echo "Setting permissions..." >> /tmp/bootlog.txt
+chmod 666 /dev/input/event* 2>/dev/null || true
+chown -R 1001:50 /home/tc
+chmod -R u+rwX /home/tc
+
+# Load specific vital extensions if not already loaded (Safe guard)
+# Note: Tiny Core usually loads onboot.lst automatically via 'cde' boot param
+[ ! -f /usr/local/bin/Xorg ] && su - tc -c "tce-load -i Xorg-7.7" >> /tmp/tce.log 2>&1
+
+# 3. Start DBus
+[ -x /usr/local/etc/init.d/dbus ] && /usr/local/etc/init.d/dbus start
+
+# 4. Start networking (Robust for eth0, ens3, etc)
+pkill -9 udhcpc 2>/dev/null
+for iface in \$(ls /sys/class/net | grep ^e); do
+    echo "Starting DHCP on \$iface..." >> /tmp/bootlog.txt
+    ifconfig "\$iface" up
+    udhcpc -b -i "\$iface" &
+done
+
+# --- AUTO LOG COLLECTOR (FIX FOR USB BOOT DEBUGGING) ---
+# This background task waits for the system to boot, then bundles logs
+# and saves them to the USB drive (where /cde is).
+(
+    echo "Starting Auto-Log Collector in 60s..." >> /tmp/bootlog.txt
+    sleep 60
+    LOG_BUNDLE="/tmp/debug_logs_\$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "\$LOG_BUNDLE"
+    dmesg > "\$LOG_BUNDLE/dmesg.txt"
+    lspci -vv > "\$LOG_BUNDLE/lspci.txt" 2>&1
+    lsusb -vv > "\$LOG_BUNDLE/lsusb.txt" 2>&1
+    cp /var/log/Xorg.0.log "\$LOG_BUNDLE/" 2>/dev/null
+    cp /tmp/tce.log "\$LOG_BUNDLE/" 2>/dev/null
+    cp /tmp/xsession-errors "\$LOG_BUNDLE/" 2>/dev/null
+    
+    # Identify USB boot media (look for /cde mount)
+    USB_PATH=\$(mount | grep 'on /cde' | awk '{print \$3}')
+    [ -z "\$USB_PATH" ] && USB_PATH=\$(mount | grep '/mnt/sd' | head -n1 | awk '{print \$3}')
+    
+    if [ -n "\$USB_PATH" ] && [ -d "\$USB_PATH" ]; then
+        tar -czf "\$USB_PATH/debug_bundle_\$(hostname)_\$(date +%H%M%S).tar.gz" -C /tmp "\$(basename "\$LOG_BUNDLE")"
+        echo "Logs saved to \$USB_PATH" >> /tmp/bootlog.txt
+    else
+        echo "Could not find USB path to save logs!" >> /tmp/bootlog.txt
+    fi
+) &
+EOF
+chmod +x "$WORK_DIR/opt/bootlocal.sh"
+
+# 3.1 Force libinput for all pointers and keyboards (Laptop fix)
+mkdir -p "$WORK_DIR/usr/local/share/X11/xorg.conf.d"
+cat > "$WORK_DIR/usr/local/share/X11/xorg.conf.d/10-input.conf" <<EOF
+Section "InputClass"
+    Identifier "libinput pointer catchall"
+    MatchIsPointer "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier "libinput keyboard catchall"
+    MatchIsKeyboard "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier "libinput touchpad catchall"
+    MatchIsTouchpad "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+    Option "Tapping" "on"
+EndSection
+EOF
+
+# Create Openbox config to force maximization and remove decorations (Kiosk Mode)
+echo "Configuring Openbox Kiosk Mode..."
+mkdir -p "$WORK_DIR/home/tc/.config/openbox"
+cat > "$WORK_DIR/home/tc/.config/openbox/rc.xml" << 'OB_EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_config xmlns="http://openbox.org/3.4/rc">
-  <theme>
-    <keepBorder>no</keepBorder>
-  </theme>
-  <margins>
-    <top>0</top><bottom>0</bottom><left>0</left><right>0</right>
-  </margins>
-  <dock>
-    <position>BottomRight</position>
-    <autoHide>yes</autoHide>
-    <hideDelay>10</hideDelay>
-    <showDelay>10000</showDelay>
-  </dock>
   <applications>
-    <application name="*" class="*">
-      <maximized>true</maximized>
+    <application name="*">
       <decor>no</decor>
-      <fullscreen>true</fullscreen>
-      <border>no</border>
+      <maximized>yes</maximized>
+      <fullscreen>yes</fullscreen>
     </application>
   </applications>
+  <keyboard>
+    <keybind key="A-F4"><action name="Close"/></keybind>
+  </keyboard>
 </openbox_config>
-OPENBOX_EOF
+OB_EOF
+chown -R 1001:50 "$WORK_DIR/home/tc/.config"
 
-# .xsession — GUI Client Sequence
-cat > home/tc/.xsession << 'XSESSION_EOF'
+# Create .xsession for the 'tc' user
+mkdir -p "$WORK_DIR/home/tc"
+cat > "$WORK_DIR/home/tc/.xsession" << 'EOF'
 #!/bin/sh
-# REDIRECT ALL LOGS
-exec 2>&1 | tee /tmp/xsession.log
+# Load X environment
+. /etc/init.d/tc-functions
 
-export HOME=/home/tc
-export USER=tc
+# === Environment Setup ===
 export DISPLAY=:0
-export XDG_RUNTIME_DIR=/tmp/runtime-tc
-
-# WebKit/Tauri compatibility flags (CRITICAL for VMs)
-export WEBKIT_DISABLE_COMPOSITING_MODE=1
-export WEBKIT_DISABLE_SANDBOX=1
-export WEBKIT_DISABLE_DMABUF_RENDERER=1
-export LIBGL_ALWAYS_SOFTWARE=1
+export XAUTHORITY=/home/tc/.Xauthority
 export GDK_BACKEND=x11
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export LD_LIBRARY_PATH="/opt/libs_private:$LD_LIBRARY_PATH"
 
-# Point WebKit to our bundled helper processes
-export WEBKIT_EXEC_PATH=/opt/d-secure-ui/lib/webkit2gtk-4.1
+# Prevent double-execution
+if [ -f /tmp/.xsession_started ]; then
+    exit 0
+fi
+touch /tmp/.xsession_started
 
-# WAIT FOR X SERVER (Check socket directly as xset might be missing)
-echo "[GUI] Waiting for X server socket /tmp/.X11-unix/X0..." | tee /dev/console
-RETRY=0
-while [ $RETRY -lt 40 ]; do
-    if [ -S /tmp/.X11-unix/X0 ]; then
-        echo "[GUI] X server socket detected!" | tee /dev/console
-        break
-    fi
-    RETRY=$((RETRY+1))
-    sleep 0.25
+# Wait for X server socket to be ready
+echo "[XSESSION] Waiting for X server..." > /dev/ttyS0
+for i in $(seq 1 10); do
+    [ -S /tmp/.X11-unix/X0 ] && break
+    sleep 0.5
 done
 
-# Launch Window Manager
-echo "[GUI] Starting Openbox..." | tee /dev/console
-openbox --config-file $HOME/.config/openbox/rc.xml &
-sleep 2
+# Kill framebuffer splash now that X is taking over
+killall fb_splash.sh 2>/dev/null || true
 
-# Background and cleanup
-[ -f /usr/local/bin/xsetroot ] && xsetroot -cursor_name left_ptr -solid "#ffffff" || true
-sudo pkill -TERM tiny_splash 2>/dev/null || true
+# Set X background to our brand color immediately + hide cursor
+xsetroot -solid '#030d2b'
+xsetroot -cursor_name left_ptr
+xset s off 2>/dev/null
+xset -dpms 2>/dev/null
+xset s noblank 2>/dev/null
 
-APP_BIN="/opt/d-secure-ui/app"
-LIB_PATH="/opt/d-secure-ui/lib"
-SYSTEM_LIBS="/usr/local/lib:/usr/lib:/lib"
-LOADER="$LIB_PATH/ld-linux-x86-64.so.2"
+# Start window manager (Openbox)
+echo "[XSESSION] Starting Openbox..." > /dev/ttyS0
+openbox-session &
+sleep 1
 
-if [ -f "$APP_BIN" ]; then
-    echo "[GUI] Launching D-Secure Dashboard..." | tee /dev/console
-    cd /opt/d-secure-ui
-    if [ -f "$LOADER" ]; then
-        dbus-run-session "$LOADER" --library-path "$LIB_PATH:$SYSTEM_LIBS" "$APP_BIN" 2>&1 | tee /tmp/app.log || {
-            echo "[ERROR] App crashed. Logs below:" | tee /dev/console
-            aterm -title "DEBUG: App Error" -e /bin/sh -c "cat /tmp/app.log; exec /bin/sh"
-        }
-    else
-        dbus-run-session "$APP_BIN" 2>&1 | tee /tmp/app.log || aterm -title "ERROR" -e "cat /tmp/app.log; exec sh"
-    fi
-else
-    echo "[ERROR] Dashboard binary missing at $APP_BIN" | tee /dev/console
-    aterm -title "ERROR: Missing Binary"
-fi
-XSESSION_EOF
-chmod +x home/tc/.xsession
-
-# .profile — Autostart sequence
-cat > home/tc/.profile << 'PROFILE_EOF'
-#!/bin/sh
-export PATH=/usr/local/bin:/usr/local/sbin:/bin:/sbin:/usr/bin:/usr/sbin
-export HOME=/home/tc
-export USER=tc
+# Environment setup for Tauri / WebKitGTK (Maximum Compatibility Mode)
+export GDK_BACKEND=x11
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export WEBKIT_DISABLE_GPU_PROCESS=1
+export LIBGL_ALWAYS_SOFTWARE=1
 export DISPLAY=:0
+export XAUTHORITY=/home/tc/.Xauthority
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 
-case "$(tty)" in
-    /dev/tty1|/dev/vc/1)
-        [ -f /tmp/.boot_done ] && return
-        touch /tmp/.boot_done
-        
-        echo "[BOOT] Initializing D-Secure Tools..." | tee /dev/console
-        
-        # Load drivers
-        sudo depmod -a
-        for mod in ahci nvme sd_mod i8042 atkbd psmouse hid hid-generic usbhid evdev uinput vboxvideo vmwgfx virtio_gpu; do
-            sudo modprobe "$mod" 2>/dev/null || true
-        done
-        sudo udevadm trigger && sudo udevadm settle --timeout=3
-        
-        # Start DBus
-        [ -f /usr/local/etc/init.d/dbus ] && sudo /usr/local/etc/init.d/dbus start | tee /dev/console
-        [ -f /etc/machine-id ] || sudo dbus-uuidgen --ensure=/etc/machine-id
-        
-        # Mandatory symlinks
-        [ -d /lib64 ] || sudo ln -sf /lib /lib64
-        
-        # Permissions
-        sudo chmod 666 /dev/input/event* /dev/dri/* /dev/fb0 2>/dev/null || true
-        
-        # Environment
-        export XDG_RUNTIME_DIR=/tmp/runtime-tc
-        mkdir -p $XDG_RUNTIME_DIR && chmod 700 $XDG_RUNTIME_DIR
-        
-        echo "[BOOT] Starting Graphical Subsystem..." | tee /dev/console
-        startx -- :0 2>&1 | tee /tmp/startx.log
-        
-        echo "[BOOT] GUI exited. Fallback shell." | tee /dev/console
-        exec /bin/sh
-        ;;
-esac
-PROFILE_EOF
-chmod +x home/tc/.profile
-cp -p home/tc/.profile home/tc/.xsession etc/skel/
-echo "tc ALL=(ALL) NOPASSWD: ALL" >> etc/sudoers
+# Launch App.AppImage (Tauri/React Kiosk)
+echo "[XSESSION] Launching App.AppImage (Logging to app.log)..." > /dev/ttyS0
+# Redirect to a file so the user can 'cat' it from the fallback terminal
+/opt/App.AppImage --no-sandbox > /home/tc/app.log 2>&1 &
+APP_PID=$!
 
-# 5. Install Tauri App
-echo "Installing Dashboard..."
-mkdir -p opt/d-secure-ui/lib
-cp "/home/nickx/Downloads/d-secure-ui/src-tauri/target/release/app" "opt/d-secure-ui/app"
-ln -sf lib lib64
+# Watchdog / Wait for kiosk window
+(
+    WID=""
+    for i in $(seq 1 30); do
+        # Search for any window (Tauri apps usually have a generic name initially)
+        WID=$(xdotool search --all --name ".*" 2>/dev/null | tail -n 1)
+        if [ -n "$WID" ]; then
+            echo "[BOOT] Kiosk window found (WID: $WID), focusing..." > /dev/ttyS0
+            xdotool windowactivate "$WID" 2>/dev/null || true
+            xdotool windowraise "$WID" 2>/dev/null || true
+            break
+        fi
+        sleep 1
+    done
+) &
 
-# Bundle host libraries (GLIBC 2.39 + Support Libs)
-echo "Bundling host libraries for compatibility..."
-HOST_LIB_DIR="/lib/x86_64-linux-gnu"
-HOST_USR_LIB="/usr/lib/x86_64-linux-gnu"
+# Keep session alive by waiting for the AppImage process
+wait $APP_PID 2>/dev/null
 
-# Complete list to avoid dependency chain issues & White Screens
-LIBS="libc.so.6 ld-linux-x86-64.so.2 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 
-      libatomic.so.1 libwebpdemux.so.2 libgdk-3.so.0 libgtk-3.so.0 libwebkit2gtk-4.1.so.0 
-      libjavascriptcoregtk-4.1.so.0 libsoup-3.0.so.0 libenchant-2.so.2 libsecret-1.so.0
-      libharfbuzz-icu.so.0 libopenjp2.so.7 liblcms2.so.2 libsystemd.so.0 liblzma.so.5 
-      libzstd.so.1 libgcrypt.so.20 libcap.so.2 libgpg-error.so.0 libdbus-1.so.3
-      libepoxy.so.0 libfontconfig.so.1 libxkbcommon.so.0"
+# If app exits, start a terminal so user isn't stranded
+aterm &
+wait
+EOF
+chmod +x "$WORK_DIR/home/tc/.xsession"
 
-for lib in $LIBS; do
-    if [ -f "$HOST_LIB_DIR/$lib" ]; then
-        cp "$HOST_LIB_DIR/$lib" "opt/d-secure-ui/lib/$lib"
-    elif [ -f "$HOST_USR_LIB/$lib" ]; then
-        cp "$HOST_USR_LIB/$lib" "opt/d-secure-ui/lib/$lib"
-    else
-        echo "Warning: Host library $lib not found!"
-    fi
-done
-
-# Copy WebKit helper processes (Mandatory for rendering the actual web view)
-if [ -d "$HOST_USR_LIB/webkit2gtk-4.1" ]; then
-    echo "Bundling WebKit helper processes..."
-    cp -r "$HOST_USR_LIB/webkit2gtk-4.1" "opt/d-secure-ui/lib/"
+# 3.2 Ensure Autostart into X
+cat > "$WORK_DIR/home/tc/.profile" << 'EOF'
+if [ -z "$DISPLAY" ] && [ $(tty) = /dev/tty1 ]; then
+    startx
 fi
+EOF
+chown 1001:50 "$WORK_DIR/home/tc/.profile"
 
-chmod +x opt/d-secure-ui/app opt/d-secure-ui/lib/ld-linux-x86-64.so.2 2>/dev/null || true
-chown -R 1000:50 home/tc etc/skel opt/d-secure-ui
+# Copy binary App.AppImage to /opt
+cp "$SCRIPT_DIR/app_bin/App.AppImage" "$WORK_DIR/opt/App.AppImage"
+chmod +x "$WORK_DIR/opt/App.AppImage"
 
-# 6. Repack (XZ-2 for speed)
-echo "[4/4] Repacking..."
-find . | cpio -o -H newc 2>/dev/null | xz -2 --check=crc32 > "$ISO_ROOT/boot/core_custom.gz"
-cd "$SCRIPT_DIR"
-cp "$BASE_DIR/vmlinuz64" "$ISO_ROOT/boot/vmlinuz64"
-cp "$BASE_DIR/modules64.gz" "$ISO_ROOT/boot/modules64.gz"
+# Copy the Python Dashboard
+cp "$SCRIPT_DIR/dashboard.py" "$WORK_DIR/opt/dashboard.py"
+chmod +x "$WORK_DIR/opt/dashboard.py"
 
-# 7. GRUB Prep (Center logo via compositing)
-echo "Preparing GRUB..."
-mkdir -p "$ISO_ROOT/boot/grub"
+# Copy Splash Screen dependencies
+cp "$SCRIPT_DIR/app_bin/splash_minimal.sh" "$WORK_DIR/opt/splash_minimal.sh"
+cp "$SCRIPT_DIR/app_bin/fb_splash.sh" "$WORK_DIR/opt/fb_splash.sh"
+chmod +x "$WORK_DIR/opt/splash_minimal.sh"
+chmod +x "$WORK_DIR/opt/fb_splash.sh"
 
-# Combine parrot background with centered logo
-if [ -f "/home/nickx/Downloads/parrot.jpg" ] && [ -f "/home/nickx/Downloads/enhance.png" ]; then
-    convert "/home/nickx/Downloads/parrot.jpg" \( "/home/nickx/Downloads/enhance.png" -resize 800x \) -gravity center -composite "$ISO_ROOT/boot/grub/background.jpg"
-fi
+# Custom boot message
+sed -i 's/Tiny Core Linux/Custom ISO with Dashboard/g' "$WORK_DIR/etc/init.d/rcS" 2>/dev/null || true
 
-# Use standard config file from Downloads but PATCH it for EFI compatibility
-if [ -f "/home/nickx/Downloads/grub_cfg" ]; then
-    cp "/home/nickx/Downloads/grub_cfg" "$ISO_ROOT/boot/grub/grub.cfg"
-    # Ensure EFI modules are present for the background image
-    sed -i 's/insmod vbe/insmod vbe\ninsmod efi_gop\ninsmod efi_uga/g' "$ISO_ROOT/boot/grub/grub.cfg"
-    # Remove the 'nomodeset' and other flags that break modern VM/Laptop graphics
-    sed -i 's/nomodeset acpi=off noapic nolapic intel_idle.max_cstate=0 idle=poll//g' "$ISO_ROOT/boot/grub/grub.cfg"
-    # Enable Serial logging for host-side debug
-    sed -i 's/linux \/boot\/vmlinuz64/linux \/boot\/vmlinuz64 console=tty0 console=ttyS0/g' "$ISO_ROOT/boot/grub/grub.cfg"
-    # Remove quiet and vga bits
-    sed -i 's/quiet//g' "$ISO_ROOT/boot/grub/grub.cfg"
-    sed -i 's/vga=791//g' "$ISO_ROOT/boot/grub/grub.cfg"
-else
-    # Minimal fallback config if file missing
-    cat > "$ISO_ROOT/boot/grub/grub.cfg" << 'EOF'
-set timeout=5
+# 5. BOOTLOADER GENERATION (GRUB BIOS + UEFI)
+echo "[5/5] Generating bootloaders..."
+
+# Update grub.cfg to match TinyCore kernel/initrd names
+cat > "$ISO_ROOT/boot/grub/grub.cfg" << GCFG
+set timeout=20
 set default=0
+
 insmod all_video
 insmod gfxterm
 insmod png
-insmod jpeg
-insmod efi_gop
-insmod efi_uga
-terminal_output gfxterm
-background_image /boot/grub/background.jpg
-set menu_color_normal=white/black
-set menu_color_highlight=black/light-gray
+insmod font
 
-menuentry "D-Secure Drive Eraser" {
-    linux /boot/vmlinuz64 console=tty0 console=ttyS0 loglevel=7 noswap laptop
-    initrd /boot/core_custom.gz /boot/modules64.gz
-}
-EOF
+set gfxmode=1024x768x32,800x600x32,auto
+terminal_output gfxterm
+
+# Use label-based search for TC
+search --no-floppy --set=root --file /boot/vmlinuz64
+set prefix=(\$root)/boot/grub
+
+# Set desktop image variable (needed for theme.txt)
+set desktop_image="/boot/grub/background.png"
+
+# Load labels/themes
+if [ -f (\$root)/boot/grub/themes/custom/theme.txt ]; then
+    [ -f (\$root)/boot/grub/themes/custom/font.pf2 ] && loadfont (\$root)/boot/grub/themes/custom/font.pf2
+    set theme=(\$root)/boot/grub/themes/custom/theme.txt
+else
+    [ -f (\$root)/boot/grub/background.png ] && background_image (\$root)/boot/grub/background.png
 fi
 
-echo "=== Remaster Complete! ==="
-# Cleanup work dir
-cd "$SCRIPT_DIR"
-rm -rf "$WORK_DIR" || true
+menuentry "D-Secure Drive Eraser" {
+    echo "Loading D-Secure (Tiny Core Edition)..."
+    linux /boot/vmlinuz64 quiet loglevel=0 cde waitusb=20 vt.global_cursor_default=0 vga=791
+    initrd /boot/core_custom.gz /boot/modules64.gz
+}
+
+menuentry "Reboot" {
+    reboot
+}
+GCFG
+
+# BIOS Image (Safe size)
+mkdir -p "$ISO_ROOT/boot/grub/i386-pc"
+grub-mkstandalone \
+    --format=i386-pc \
+    --output="$ISO_ROOT/boot/grub/core.img" \
+    --install-modules="linux normal iso9660 biosdisk search all_video gfxterm png font" \
+    --modules="linux normal iso9660 biosdisk search all_video gfxterm png font" \
+    "boot/grub/grub.cfg=$ISO_ROOT/boot/grub/grub.cfg"
+
+cat /usr/lib/grub/i386-pc/cdboot.img "$ISO_ROOT/boot/grub/core.img" > "$ISO_ROOT/boot/grub/bios.img"
+
+# UEFI Image (Embedded assets)
+mkdir -p "$ISO_ROOT/EFI/BOOT"
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output="$ISO_ROOT/EFI/BOOT/BOOTx64.EFI" \
+    --install-modules="linux normal iso9660 efi_gop efi_uga all_video search gfxterm png font" \
+    "boot/grub/grub.cfg=$ISO_ROOT/boot/grub/grub.cfg" \
+    "boot/grub/background.png=$ISO_ROOT/boot/grub/background.png" \
+    "boot/grub/themes/custom=$ISO_ROOT/boot/grub/themes/custom"
+
+# FAT EFI image for xorriso
+EFI_IMG="$ISO_ROOT/boot/grub/efi.img"
+dd if=/dev/zero of="$EFI_IMG" bs=1M count=4 status=none
+mkfs.fat -F 12 -n "EFI" "$EFI_IMG" &>/dev/null
+mmd -i "$EFI_IMG" ::/EFI ::/EFI/BOOT
+mcopy -i "$EFI_IMG" "$ISO_ROOT/EFI/BOOT/BOOTx64.EFI" ::/EFI/BOOT/
+
+# 6. BUILD FINAL ISO
+echo "Building final ISO..."
+ISO_OUT="$SCRIPT_DIR/d-secure-tc-$(date +%Y%m%d).iso"
+xorriso -as mkisofs \
+    -iso-level 3 \
+    -volid "DSECURE_TC" \
+    -eltorito-boot boot/grub/bios.img \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot \
+        -e boot/grub/efi.img -no-emul-boot \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohybrid.bin -isohybrid-gpt-basdat \
+    -o "$ISO_OUT" \
+    "$ISO_ROOT"
+
+echo "=== Remaster Complete: $ISO_OUT ==="

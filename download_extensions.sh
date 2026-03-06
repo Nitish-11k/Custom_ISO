@@ -5,58 +5,28 @@
 set -euo pipefail
 
 TCZ_DIR="/home/nickx/.gemini/antigravity/scratch/custom_iso/tc_extensions"
-TCZ_URL="http://distro.ibiblio.org/tinycorelinux/15.x/x86_64/tcz"
+TCZ_URL="http://tinycorelinux.net/17.x/x86_64/tcz"
 DOWNLOADED=""
 
 download_tcz() {
     local ext="$1"
     
     # Skip if already downloaded
-    if echo "$DOWNLOADED" | grep -qF "$ext"; then
+    if echo "$DOWNLOADED" | grep -qwF "$ext"; then
         return
     fi
     DOWNLOADED="$DOWNLOADED $ext"
     
-    # Check if download is needed and verify checksum if file exists
-    local needs_download=0
+    # Download the extension
     if [ ! -f "$TCZ_DIR/$ext" ]; then
-        needs_download=1
-    else
-        wget -q -O "$TCZ_DIR/$ext.md5.txt" "$TCZ_URL/$ext.md5.txt" || true
-        if [ -f "$TCZ_DIR/$ext.md5.txt" ] && ! grep -q '<html>' "$TCZ_DIR/$ext.md5.txt"; then
-            (cd "$TCZ_DIR" && md5sum -c "$ext.md5.txt" >/dev/null 2>&1) || needs_download=1
-        fi
-    fi
-    
-    if [ $needs_download -eq 1 ]; then
-        echo "  Downloading $ext and verifying checksum..."
-        local retries=5
-        local success=0
-        for ((i=1; i<=retries; i++)); do
-            wget -q -O "$TCZ_DIR/$ext" "$TCZ_URL/$ext" || true
-            wget -q -O "$TCZ_DIR/$ext.md5.txt" "$TCZ_URL/$ext.md5.txt" || true
-            
-            if [ -f "$TCZ_DIR/$ext" ] && [ -f "$TCZ_DIR/$ext.md5.txt" ] && ! grep -q '<html>' "$TCZ_DIR/$ext.md5.txt"; then
-                if (cd "$TCZ_DIR" && md5sum -c "$ext.md5.txt" >/dev/null 2>&1); then
-                    success=1
-                    break
-                else
-                    echo "  Checksum failed for $ext, retry $i..."
-                fi
-            elif [ -f "$TCZ_DIR/$ext" ]; then
-                # No md5 available
-                success=1
-                break
-            fi
-            sleep 1
-        done
-        if [ $success -eq 0 ]; then
-            echo "  WARNING: Failed to download $ext correctly after $retries retries!"
+        echo "  Downloading $ext..."
+        wget -q -O "$TCZ_DIR/$ext" "$TCZ_URL/$ext" 2>/dev/null || {
+            echo "  WARNING: Failed to download $ext"
             rm -f "$TCZ_DIR/$ext"
             return
-        fi
+        }
     else
-        echo "  Already have valid $ext"
+        echo "  Already have $ext"
     fi
     
     # Download and resolve dependencies
@@ -67,7 +37,7 @@ download_tcz() {
         # Check it's not an HTML 404 page
         if ! grep -q '<html>' "$depfile" 2>/dev/null; then
             while IFS= read -r dep; do
-                dep=$(echo "$dep" | tr -d '\r' | xargs)
+                dep=$(echo "$dep" | tr -d '\r' | xargs | sed 's/-KERNEL/-6.18.2-tinycore64/')
                 if [ -n "$dep" ]; then
                     download_tcz "$dep"
                 fi
@@ -83,55 +53,51 @@ echo ""
 # Core extensions needed
 for ext in \
     Xorg-7.7.tcz \
-    xf86-input-libinput.tcz \
-    xf86-input-vmmouse.tcz \
-    libinput.tcz \
-    mtdev.tcz \
-    libevdev.tcz \
-    libwacom.tcz \
-    flwm.tcz \
+    openbox.tcz \
+    xdotool.tcz \
+    python3.14.tcz \
+    tk8.6.tcz \
     aterm.tcz \
-    dbus.tcz \
-    gtk3.tcz \
-    webkitgtk-gtk3.tcz \
-    libwebp1.tcz \
-    pcre21042.tcz \
-    libXss.tcz \
+    xf86-input-evdev.tcz \
+    pciutils.tcz \
+    usbutils.tcz \
     xf86-video-fbdev.tcz \
     xf86-video-vesa.tcz \
+    gtk3.tcz \
+    libwacom.tcz \
+    fuse.tcz \
     nss.tcz \
-    nspr.tcz \
-    graphics-6.6.8-tinycore64.tcz \
-    xf86-video-vmware.tcz \
-    libmanette.tcz \
-    brotli.tcz \
-    gcc_libs.tcz \
+    libasound.tcz \
+    at-spi2-core.tcz \
+    libXss.tcz \
+    libcups.tcz \
+    libsecret.tcz \
+    mesa.tcz \
     libEGL.tcz \
+    libGL.tcz \
     libGLESv2.tcz \
-    util-linux.tcz \
-    wifi.tcz \
-    wireless-6.6.8-tinycore64.tcz \
-    wireless_tools.tcz \
-    wpa_supplicant-dbus.tcz \
-    libiw.tcz \
-    libnl.tcz \
-    modemmanager.tcz \
-    libmbim.tcz \
-    libqmi.tcz \
-    pciutils.tcz \
-    xf86-input-evdev.tcz \
-    xf86-input-synaptics.tcz \
-    xf86-input-keyboard.tcz \
-    xf86-input-mouse.tcz \
+    libcanberra.tcz \
+    input-tablet-touchscreen-6.18.2-tinycore64.tcz \
+    graphics-6.18.2-tinycore64.tcz \
     libinput.tcz \
-    openbox.tcz \
-    xcursor-themes.tcz \
-    input-tablet-touchscreen-6.6.8-tinycore64.tcz \
-    Xorg-7.7-3d.tcz \
-    llvm15-lib.tcz \
-    xdotool.tcz \
-    xrandr.tcz \
-    xsetroot.tcz \
+    xf86-input-libinput.tcz \
+    bash.tcz \
+    xkeyboard-config.tcz \
+    iw.tcz \
+    wpa_supplicant-dbus.tcz \
+    net-tools.tcz \
+    wireless-6.18.2-tinycore64.tcz \
+    firmware-iwlwifi.tcz \
+    firmware-rtlwifi.tcz \
+    firmware-atheros.tcz \
+    firmware-broadcom_bcm43xx.tcz \
+    firmware-broadcom_bnx2.tcz \
+    firmware-broadcom_bnx2x.tcz \
+    firmware-rtl_nic.tcz \
+    rfkill.tcz \
+    wifi.tcz \
+    wireless_tools.tcz \
+    ncursesw.tcz \
 ; do
     echo ">>> Resolving: $ext"
     download_tcz "$ext"

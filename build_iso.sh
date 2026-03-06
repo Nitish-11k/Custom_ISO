@@ -5,8 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ISO_ROOT="$SCRIPT_DIR/iso_root"
-OUTPUT_ISO="$SCRIPT_DIR/custom.iso"
+ISO_ROOT="$SCRIPT_DIR/iso_root_opt"
+OUTPUT_ISO="$SCRIPT_DIR/custom_opt.iso"
 
 echo "=== Building Custom Dashboard ISO ==="
 
@@ -25,14 +25,20 @@ REQUIRED_FILES="
 boot/vmlinuz64
 boot/core_custom.gz
 boot/grub/grub.cfg
+cde/optional/gtk3.tcz
+cde/optional/libwacom.tcz
+cde/optional/Xorg-7.7.tcz
+cde/onboot.lst
 "
 
 for f in $REQUIRED_FILES; do
     if [ ! -f "$ISO_ROOT/$f" ]; then
         echo "ERROR: Missing $f in iso_root!"
+        ls -lh "$ISO_ROOT/cde/optional/" | head -5
         exit 1
     fi
 done
+echo "   Tree verification passed (gtk3, libwacom, Xorg present)."
 
 # 3. Build the ISO with grub-mkrescue
 echo "[3/3] Building ISO with grub-mkrescue..."

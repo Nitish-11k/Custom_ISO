@@ -36,7 +36,7 @@ while [ $MISSING_FOUND -ne 0 ]; do
         [ -f "$depfile" ] || continue
         # Filter out empty lines/whitespace
         while IFS= read -r dep; do
-            dep=$(echo "$dep" | tr -d '\r' | xargs)
+            dep=$(echo "$dep" | tr -d '\r' | xargs | sed 's/-KERNEL/-6.6.8-tinycore64/')
             if [ -n "$dep" ]; then
                 if [ ! -f "$dep" ]; then
                     echo "$dep" >> missing_list.txt
