@@ -44,27 +44,93 @@ echo "[3/4] Configuring autostart..."
 # FIX: Ensure /home/tc permissions are correct at runtime
 cat > "$WORK_DIR/opt/bootlocal.sh" <<EOF
 #!/bin/sh
-# Fix permissions for tc home (critical fix)
+
+# 1. Hardware discovery and module loading (Laptop Touchpad Fix)
+echo "Forcing hardware discovery..." >> /tmp/bootlog.txt
+/sbin/udevadm trigger
+/sbin/udevadm settle --timeout=10
+
+# Force load HID and I2C modules just in case (Critical for touchpads)
+modprobe i2c-hid-acpi 2>/dev/null || true
+modprobe hid-multitouch 2>/dev/null || true
+modprobe hid-generic 2>/dev/null || true
+modprobe evdev 2>/dev/null || true
+
+# 2. Fix permissions for input nodes and home
+echo "Setting permissions..." >> /tmp/bootlog.txt
+chmod 666 /dev/input/event* 2>/dev/null || true
 chown -R 1001:50 /home/tc
 chmod -R u+rwX /home/tc
 
-# Load all other extensions (as user tc)
-echo "Loading extensions (as user tc)..." >> /tmp/tce.log
-su - tc -c "tce-load -i /cde/optional/*.tcz" >> /tmp/tce.log 2>&1
+# Load specific vital extensions if not already loaded (Safe guard)
+# Note: Tiny Core usually loads onboot.lst automatically via 'cde' boot param
+[ ! -f /usr/local/bin/Xorg ] && su - tc -c "tce-load -i Xorg-7.7" >> /tmp/tce.log 2>&1
 
-
-# Start DBus (CRITICAL for Firefox speed)
+# 3. Start DBus
 [ -x /usr/local/etc/init.d/dbus ] && /usr/local/etc/init.d/dbus start
 
-# Start networking (Robust for eth0, ens3, etc)
+# 4. Start networking (Robust for eth0, ens3, etc)
 pkill -9 udhcpc 2>/dev/null
-for iface in $(ls /sys/class/net | grep ^e); do
-    echo "Starting DHCP on $iface..." >> /tmp/bootlog.txt
-    ifconfig "$iface" up
-    udhcpc -b -i "$iface" &
+for iface in \$(ls /sys/class/net | grep ^e); do
+    echo "Starting DHCP on \$iface..." >> /tmp/bootlog.txt
+    ifconfig "\$iface" up
+    udhcpc -b -i "\$iface" &
 done
+
+# --- AUTO LOG COLLECTOR (FIX FOR USB BOOT DEBUGGING) ---
+# This background task waits for the system to boot, then bundles logs
+# and saves them to the USB drive (where /cde is).
+(
+    echo "Starting Auto-Log Collector in 60s..." >> /tmp/bootlog.txt
+    sleep 60
+    LOG_BUNDLE="/tmp/debug_logs_\$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "\$LOG_BUNDLE"
+    dmesg > "\$LOG_BUNDLE/dmesg.txt"
+    lspci -vv > "\$LOG_BUNDLE/lspci.txt" 2>&1
+    lsusb -vv > "\$LOG_BUNDLE/lsusb.txt" 2>&1
+    cp /var/log/Xorg.0.log "\$LOG_BUNDLE/" 2>/dev/null
+    cp /tmp/tce.log "\$LOG_BUNDLE/" 2>/dev/null
+    cp /tmp/xsession-errors "\$LOG_BUNDLE/" 2>/dev/null
+    
+    # Identify USB boot media (look for /cde mount)
+    USB_PATH=\$(mount | grep 'on /cde' | awk '{print \$3}')
+    [ -z "\$USB_PATH" ] && USB_PATH=\$(mount | grep '/mnt/sd' | head -n1 | awk '{print \$3}')
+    
+    if [ -n "\$USB_PATH" ] && [ -d "\$USB_PATH" ]; then
+        tar -czf "\$USB_PATH/debug_bundle_\$(hostname)_\$(date +%H%M%S).tar.gz" -C /tmp "\$(basename "\$LOG_BUNDLE")"
+        echo "Logs saved to \$USB_PATH" >> /tmp/bootlog.txt
+    else
+        echo "Could not find USB path to save logs!" >> /tmp/bootlog.txt
+    fi
+) &
 EOF
 chmod +x "$WORK_DIR/opt/bootlocal.sh"
+
+# 3.1 Force libinput for all pointers and keyboards (Laptop fix)
+mkdir -p "$WORK_DIR/usr/local/share/X11/xorg.conf.d"
+cat > "$WORK_DIR/usr/local/share/X11/xorg.conf.d/10-input.conf" <<EOF
+Section "InputClass"
+    Identifier "libinput pointer catchall"
+    MatchIsPointer "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier "libinput keyboard catchall"
+    MatchIsKeyboard "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier "libinput touchpad catchall"
+    MatchIsTouchpad "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver "libinput"
+    Option "Tapping" "on"
+EndSection
+EOF
 
 # Create .xsession for the 'tc' user
 mkdir -p "$WORK_DIR/home/tc"

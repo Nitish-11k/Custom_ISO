@@ -37,7 +37,7 @@ download_tcz() {
         # Check it's not an HTML 404 page
         if ! grep -q '<html>' "$depfile" 2>/dev/null; then
             while IFS= read -r dep; do
-                dep=$(echo "$dep" | tr -d '\r' | xargs)
+                dep=$(echo "$dep" | tr -d '\r' | xargs | sed 's/-KERNEL/-6.6.8-tinycore64/')
                 if [ -n "$dep" ]; then
                     download_tcz "$dep"
                 fi
@@ -56,10 +56,16 @@ for ext in \
     flwm.tcz \
     python3.9.tcz \
     tk8.6.tcz \
-    firefox-ESR.tcz \
     xf86-video-cirrus.tcz \
     xf86-video-qxl.tcz \
     aterm.tcz \
+    xf86-input-evdev.tcz \
+    pciutils.tcz \
+    usb-utils.tcz \
+    input-tablet-touchscreen-6.6.8-tinycore64.tcz \
+    graphics-6.6.8-tinycore64.tcz \
+    libinput.tcz \
+    xkeyboard-config.tcz \
 ; do
     echo ">>> Resolving: $ext"
     download_tcz "$ext"
