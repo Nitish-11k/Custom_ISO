@@ -63,8 +63,10 @@ for ext in \
     pciutils.tcz \
     usb-utils.tcz \
     input-tablet-touchscreen-6.6.8-tinycore64.tcz \
+    input-6.6.8-tinycore64.tcz \
     graphics-6.6.8-tinycore64.tcz \
     libinput.tcz \
+    xf86-input-libinput.tcz \
     xkeyboard-config.tcz \
 ; do
     echo ">>> Resolving: $ext"

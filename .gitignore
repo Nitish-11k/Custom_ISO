@@ -1,0 +1,18 @@
+# Temporary remaster directories
+tc_remaster.old.*
+tc_work_*
+tc_remaster/
+
+# Logs
+*.log
+ttyS0.log
+serial.log
+
+# Large Binaries / Build Artifacts
+iso_root/boot/core_custom.gz
+iso_root/boot/modules64.gz
+iso_root/boot/vmlinuz64
+tiny_splash
+
+# ISO images
+*.iso
