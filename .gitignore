@@ -4,12 +4,21 @@
 *.gz
 *.log
 *.sha256
+*.tga
+*.AppImage
 
-# Large binary files
-pxe_build/pxe/filesystem.squashfs
+# Large binary / build-output directories
+app_bin/
+tc_extensions/
+pxe_build/
+pxe_build_backup/
+kiosk_launcher
+
+# ISO root large binary content
+iso_root/cde/
+iso_root/boot/vmlinuz64
 
 # Rootfs and work directories (often have permission issues or are too large)
-pxe_build/rootfs/
 tc_remaster/
 tc_remaster_opt/
 iso_root_opt/

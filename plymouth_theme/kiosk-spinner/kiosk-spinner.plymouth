@@ -1,0 +1,34 @@
+[Plymouth Theme]
+Name=Kiosk Spinner
+Description=Kiosk branding with background and spinner
+ModuleName=two-step
+
+[two-step]
+Font=Cantarell 12
+TitleFont=Cantarell Light 30
+ImageDir=/usr/share/plymouth/themes/kiosk-spinner
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.5
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.5
+HorizontalAlignment=.5
+VerticalAlignment=.8
+# Background image setting
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.5
+Transition=none
+TransitionDuration=0.0
+BackgroundStartColor=0x030d2b
+BackgroundEndColor=0x030d2b
+ProgressBarBackgroundColor=0x303030
+ProgressBarForegroundColor=0xffffff
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+
+[shutdown]
+UseEndAnimation=false
+
+[reboot]
+UseEndAnimation=false
