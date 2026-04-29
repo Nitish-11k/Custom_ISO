@@ -278,7 +278,8 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 # Launch App.AppImage (Tauri/React Kiosk)
 echo "[XSESSION] Launching App.AppImage (Logging to app.log)..." > /dev/ttyS0
 # Redirect to a file so the user can 'cat' it from the fallback terminal
-/opt/App.AppImage --no-sandbox > /home/tc/app.log 2>&1 &
+# Redirect to serial console for debugging
+/opt/App.AppImage --no-sandbox > /dev/ttyS0 2>&1 &
 APP_PID=$!
 
 # Watchdog / Wait for kiosk window
@@ -314,22 +315,38 @@ fi
 EOF
 chown 1001:50 "$WORK_DIR/home/tc/.profile"
 
-# Copy binary App.AppImage to /opt
-cp "$SCRIPT_DIR/app_bin/App.AppImage" "$WORK_DIR/opt/App.AppImage"
-chmod +x "$WORK_DIR/opt/App.AppImage"
+# Copy binary AppImage to /opt
+# Dynamically find the AppImage in app_bin
+ACTUAL_APPIMAGE=$(ls "$SCRIPT_DIR/app_bin"/*.AppImage | head -n 1)
+if [ -n "$ACTUAL_APPIMAGE" ]; then
+    echo "Found AppImage: $ACTUAL_APPIMAGE"
+    cp "$ACTUAL_APPIMAGE" "$WORK_DIR/opt/App.AppImage"
+    chmod +x "$WORK_DIR/opt/App.AppImage"
+else
+    echo "  [!] ERROR: No AppImage found in $SCRIPT_DIR/app_bin"
+    exit 1
+fi
 
 # Copy the Python Dashboard
 cp "$SCRIPT_DIR/dashboard.py" "$WORK_DIR/opt/dashboard.py"
 chmod +x "$WORK_DIR/opt/dashboard.py"
 
-# Copy Splash Screen dependencies
-cp "$SCRIPT_DIR/app_bin/splash_minimal.sh" "$WORK_DIR/opt/splash_minimal.sh"
-cp "$SCRIPT_DIR/app_bin/fb_splash.sh" "$WORK_DIR/opt/fb_splash.sh"
-chmod +x "$WORK_DIR/opt/splash_minimal.sh"
-chmod +x "$WORK_DIR/opt/fb_splash.sh"
+# Copy Splash Screen dependencies (only if they exist)
+[ -f "$SCRIPT_DIR/app_bin/splash_minimal.sh" ] && { cp "$SCRIPT_DIR/app_bin/splash_minimal.sh" "$WORK_DIR/opt/splash_minimal.sh"; chmod +x "$WORK_DIR/opt/splash_minimal.sh"; } || echo "  [!] Warning: splash_minimal.sh missing"
+[ -f "$SCRIPT_DIR/app_bin/fb_splash.sh" ] && { cp "$SCRIPT_DIR/app_bin/fb_splash.sh" "$WORK_DIR/opt/fb_splash.sh"; chmod +x "$WORK_DIR/opt/fb_splash.sh"; } || echo "  [!] Warning: fb_splash.sh missing"
 
 # Custom boot message
 sed -i 's/Tiny Core Linux/Custom ISO with Dashboard/g' "$WORK_DIR/etc/init.d/rcS" 2>/dev/null || true
+
+# 4. Repack the rootfs and copy kernel
+echo "[4/4] Repacking rootfs and copying kernel..."
+cd "$WORK_DIR"
+find . | cpio -o -H newc | gzip -9 > "$ISO_ROOT/boot/core_custom.gz"
+cd "$SCRIPT_DIR"
+
+# Copy kernel and modules
+cp "$BASE_DIR/vmlinuz64" "$ISO_ROOT/boot/"
+cp "$BASE_DIR/modules64.gz" "$ISO_ROOT/boot/"
 
 # 5. BOOTLOADER GENERATION (GRUB BIOS + UEFI)
 echo "[5/5] Generating bootloaders..."
@@ -373,46 +390,6 @@ menuentry "Reboot" {
 }
 GCFG
 
-# BIOS Image (Safe size)
-mkdir -p "$ISO_ROOT/boot/grub/i386-pc"
-grub-mkstandalone \
-    --format=i386-pc \
-    --output="$ISO_ROOT/boot/grub/core.img" \
-    --install-modules="linux normal iso9660 biosdisk search all_video gfxterm png font" \
-    --modules="linux normal iso9660 biosdisk search all_video gfxterm png font" \
-    "boot/grub/grub.cfg=$ISO_ROOT/boot/grub/grub.cfg"
-
-cat /usr/lib/grub/i386-pc/cdboot.img "$ISO_ROOT/boot/grub/core.img" > "$ISO_ROOT/boot/grub/bios.img"
-
-# UEFI Image (Embedded assets)
-mkdir -p "$ISO_ROOT/EFI/BOOT"
-grub-mkstandalone \
-    --format=x86_64-efi \
-    --output="$ISO_ROOT/EFI/BOOT/BOOTx64.EFI" \
-    --install-modules="linux normal iso9660 efi_gop efi_uga all_video search gfxterm png font" \
-    "boot/grub/grub.cfg=$ISO_ROOT/boot/grub/grub.cfg" \
-    "boot/grub/background.png=$ISO_ROOT/boot/grub/background.png" \
-    "boot/grub/themes/custom=$ISO_ROOT/boot/grub/themes/custom"
-
-# FAT EFI image for xorriso
-EFI_IMG="$ISO_ROOT/boot/grub/efi.img"
-dd if=/dev/zero of="$EFI_IMG" bs=1M count=4 status=none
-mkfs.fat -F 12 -n "EFI" "$EFI_IMG" &>/dev/null
-mmd -i "$EFI_IMG" ::/EFI ::/EFI/BOOT
-mcopy -i "$EFI_IMG" "$ISO_ROOT/EFI/BOOT/BOOTx64.EFI" ::/EFI/BOOT/
-
-# 6. BUILD FINAL ISO
-echo "Building final ISO..."
-ISO_OUT="$SCRIPT_DIR/d-secure-tc-$(date +%Y%m%d).iso"
-xorriso -as mkisofs \
-    -iso-level 3 \
-    -volid "DSECURE_TC" \
-    -eltorito-boot boot/grub/bios.img \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
-    -eltorito-alt-boot \
-        -e boot/grub/efi.img -no-emul-boot \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohybrid.bin -isohybrid-gpt-basdat \
-    -o "$ISO_OUT" \
-    "$ISO_ROOT"
-
-echo "=== Remaster Complete: $ISO_OUT ==="
+# 6. SUMMARY
+echo "=== Remaster Tree Complete: $ISO_ROOT ==="
+echo "You can now build the ISO using build_iso.sh (which uses grub-mkrescue)"

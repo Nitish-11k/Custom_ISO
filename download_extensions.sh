@@ -4,7 +4,8 @@
 #
 set -euo pipefail
 
-TCZ_DIR="/home/nickx/.gemini/antigravity/scratch/custom_iso/tc_extensions"
+TCZ_DIR="$(cd "$(dirname "$0")" && pwd)/tc_extensions"
+mkdir -p "$TCZ_DIR"
 TCZ_URL="http://tinycorelinux.net/17.x/x86_64/tcz"
 DOWNLOADED=""
 

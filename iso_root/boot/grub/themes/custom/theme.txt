@@ -9,7 +9,7 @@ title-font: "DejaVu Sans Mono Regular 18"
     font = "DejaVu Sans Mono Regular 18"
     color = "black"
     left = 0
-    top = 8%
+    top = 5%
     width = 100%
     align = "center"
 }
@@ -17,7 +17,7 @@ title-font: "DejaVu Sans Mono Regular 18"
 + boot_menu {
     left = 25%
     width = 50%
-    top = 15%
+    top = 10%
     height = 25%
     item_font = "DejaVu Sans Mono Regular 18"
     item_color = "black"

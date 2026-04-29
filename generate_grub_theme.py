@@ -2,18 +2,16 @@ import os
 from PIL import Image
 
 def generate_theme_files():
-    theme_dir = "/home/nickx/.gemini/antigravity/scratch/custom_iso/iso_root/boot/grub/themes/custom"
+    # Use absolute path relative to current directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    theme_dir = os.path.join(base_dir, "iso_root/boot/grub/themes/custom")
     os.makedirs(theme_dir, exist_ok=True)
 
-    # 1. Create menu box images (Black table border & background)
-    # We'll make it 4x4 pixels
+    # 1. Create menu box images (Fully transparent to match background)
     dirs = ['nw', 'n', 'ne', 'w', 'c', 'e', 'sw', 's', 'se']
     for d in dirs:
-        # Center MUST be perfectly transparent (0 opacity) to show the parrot background image
-        if d == 'c':
-            img = Image.new('RGBA', (4, 4), color=(0, 0, 0, 0))
-        else:
-            img = Image.new('RGBA', (4, 4), color=(0, 0, 0, 255))
+        # Transparent background for the whole menu box
+        img = Image.new('RGBA', (4, 4), color=(0, 0, 0, 0))
         img.save(os.path.join(theme_dir, f'menu_{d}.png'))
 
     # 2. Create selected item background (Dark blue)
@@ -33,7 +31,7 @@ title-font: "DejaVu Sans Mono Regular 18"
     font = "DejaVu Sans Mono Regular 18"
     color = "black"
     left = 0
-    top = 8%
+    top = 5%
     width = 100%
     align = "center"
 }
@@ -41,7 +39,7 @@ title-font: "DejaVu Sans Mono Regular 18"
 + boot_menu {
     left = 25%
     width = 50%
-    top = 15%
+    top = 10%
     height = 25%
     item_font = "DejaVu Sans Mono Regular 18"
     item_color = "black"
@@ -77,7 +75,7 @@ title-font: "DejaVu Sans Mono Regular 18"
     with open(os.path.join(theme_dir, "theme.txt"), "w") as f:
         f.write(theme_content)
         
-    print("Theme assets generated!")
+    print(f"Theme assets generated in {theme_dir}")
 
 if __name__ == '__main__':
     generate_theme_files()
