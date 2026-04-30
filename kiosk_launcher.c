@@ -451,7 +451,7 @@ int main(int argc, char *argv[]) {
     phase3_write_env_file();
 
     /* Phase 4: Splash screen */
-    phase4_splash();
+    // phase4_splash();
 
     /* NOTE: .xinitrc and openbox autostart are baked into ISO by build_live.sh
      * They source /tmp/tauri-env.sh which we created in Phase 3 */

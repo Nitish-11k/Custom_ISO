@@ -93,6 +93,48 @@ ln -s lib "$WORK_DIR/lib64" 2>/dev/null || true
 mkdir -p "$WORK_DIR/usr"
 ln -s lib "$WORK_DIR/usr/lib64" 2>/dev/null || true
 
+# 2.3 MODERN LIBRARY INJECTION (GLIBC 2.42 + CXXABI 1.3.15)
+# Borrow libraries from the Debian rootfs (pxe_build/rootfs) to satisfy modern AppImage requirements
+DEBIAN_ROOTFS="$SCRIPT_DIR/pxe_build/rootfs"
+LIB_DEST="$WORK_DIR/opt/libs_private"
+if [ -d "$DEBIAN_ROOTFS" ]; then
+    echo "   Injecting modern libraries from Debian rootfs..."
+    mkdir -p "$LIB_DEST"
+    
+    # 1. GLIBC 2.42 (Core)
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libc.so.6"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libm.so.6"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libpthread.so.0"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libdl.so.2"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/librt.so.1"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"* "$LIB_DEST/"
+    
+    # 2. libstdc++ (Modern C++ ABI)
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libstdc++.so.6"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libgcc_s.so.1"* "$LIB_DEST/"
+
+    # 3. Systemd/GLib dependencies (required by modern WebKitGTK/Systemd-linked binaries)
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libsystemd.so.0"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libcap.so.2"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/liblzma.so.5"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libzstd.so.1"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libgcrypt.so.20"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libgpg-error.so.0"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/libdbus-1.so.3"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/lib/x86_64-linux-gnu/liblz4.so.1"* "$LIB_DEST/"
+    
+    # 4. WebKitGTK dependencies
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libglycin-2.so.0"* "$LIB_DEST/"
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libicui18n.so.78"* "$LIB_DEST/" || true
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libicuuc.so.78"* "$LIB_DEST/" || true
+    cp -d "$DEBIAN_ROOTFS/usr/lib/x86_64-linux-gnu/libicudata.so.78"* "$LIB_DEST/" || true
+
+    echo "     -> Modern libraries injected to /opt/libs_private"
+else
+    echo "   [!] WARNING: Debian rootfs not found at $DEBIAN_ROOTFS. Library injection skipped."
+fi
+
 # 2.2 Inject Framebuffer Splash at the very start of boot (before init text)
 echo "Injecting early splash into /init..."
 sed -i 's|^#!/bin/sh|#!/bin/sh\n/opt/fb_splash.sh \&|' "$WORK_DIR/init"

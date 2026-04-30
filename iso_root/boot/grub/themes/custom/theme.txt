@@ -3,13 +3,18 @@ desktop-image: "/boot/grub/background.png"
 terminal-font: "DejaVu Sans Mono Regular 18"
 title-text: ""
 title-font: "DejaVu Sans Mono Regular 18"
+terminal-box: "term_*.png"
+terminal-left: "25%"
+terminal-top: "50%"
+terminal-width: "50%"
+terminal-height: "20%"
 
 + label {
     text = "D-Secure Boot Menu"
     font = "DejaVu Sans Mono Regular 18"
     color = "black"
     left = 0
-    top = 5%
+    top = 8%
     width = 100%
     align = "center"
 }
@@ -17,7 +22,7 @@ title-font: "DejaVu Sans Mono Regular 18"
 + boot_menu {
     left = 25%
     width = 50%
-    top = 10%
+    top = 15%
     height = 25%
     item_font = "DejaVu Sans Mono Regular 18"
     item_color = "black"
@@ -37,15 +42,4 @@ title-font: "DejaVu Sans Mono Regular 18"
     top = 92%
     width = 100%
     align = "center"
-}
-
-+ progress_bar {
-    id = "__timeout__"
-    left = 25%
-    top = 80%
-    width = 50%
-    height = 10
-    fg_color = "#1e3799"
-    bg_color = "white"
-    border_color = "black"
 }
