@@ -396,6 +396,17 @@ safe_install \
 echo "[7.5/8] Plymouth splash..."
 safe_install plymouth plymouth-themes
 mkdir -p /usr/share/plymouth/themes/kiosk-spinner
+
+cat >> /etc/initramfs-tools/modules << 'MOD_EOF'
+bochs_drm
+virtio_gpu
+qxl
+i915
+amdgpu
+radeon
+nouveau
+MOD_EOF
+
 # Files are copied from host into this dir before chroot
 plymouth-set-default-theme -R kiosk-spinner || true
 update-initramfs -u || true
@@ -664,6 +675,8 @@ if [[ -z $DISPLAY ]] && [[ $(tty) == /dev/tty1 ]]; then
     
     # CRITICAL: Quit Plymouth before starting Xorg to release GPU Lock
     sudo plymouth quit --wait 2>/dev/null || true
+
+    sleep 1
     
     startx -- -nolisten tcp -keeptty >/tmp/xorg.log 2>&1
     X_EXIT=$?
@@ -759,19 +772,24 @@ allowed_users=anybody
 needs_root_rights=yes
 XWRAP
 
-mkdir -p /etc/X11/xorg.conf.d
-cat > /etc/X11/xorg.conf.d/99-kiosk.conf << 'XORG'
-Section "Device"
-    Identifier "GenericCard"
-    Driver "modesetting"
-EndSection
+# mkdir -p /etc/X11/xorg.conf.d
+# cat > /etc/X11/xorg.conf.d/99-kiosk.conf << 'XORG'
+# Section "Device"
+#     Identifier "GenericCard"
+#     Driver "modesetting"
+# EndSection
 
-Section "Screen"
-    Identifier "Default Screen"
-    Device "GenericCard"
-    DefaultDepth 24
-EndSection
-XORG
+# Section "Device"
+#     Identifier "FallbackCard"
+#     Driver "fbdev"
+# EndSection
+
+# Section "Screen"
+#     Identifier "Default Screen"
+#     Device "GenericCard"
+#     DefaultDepth 24
+# EndSection
+# XORG
 
 dpkg-query -W --showformat='${Package}\t${Version}\n' > /tmp/filesystem.manifest 2>/dev/null || true
 
@@ -971,6 +989,7 @@ set default=0
 insmod all_video
 insmod gfxterm
 insmod gfxmenu
+insmod gfxterm_background
 insmod png
 insmod jpeg
 
@@ -985,7 +1004,17 @@ background_image (\$root)/boot/grub/background.png
 
 menuentry "D-Secure Drive Eraser" {
     set gfxpayload=keep
-    # echo "Loading Drive Eraser... Please Wait"
+    
+    clear
+    insmod gfxterm_background
+    background_image (\$root)/boot/grub/background.png
+    set color_normal=white/black
+    
+    echo ""
+    echo ""
+    echo "  Loading Drive Eraser ... Waiting.."
+    echo ""
+    
     linux (\$root)/live/vmlinuz ${cmdline}
     initrd (\$root)/live/initrd
 }
@@ -1002,11 +1031,12 @@ GCFG
     log "Building GRUB BIOS & UEFI images..."
 
     mkdir -p "$ISO_DIR/boot/grub/i386-pc"
+    # YAHAN CHANGE KIYA HAI: 'echo', 'sleep', 'gfxterm_background' modules add kiye hain
     grub-mkstandalone \
         --format=i386-pc \
         --output="$ISO_DIR/boot/grub/core.img" \
-        --install-modules="linux normal iso9660 biosdisk memdisk search tar ls part_gpt part_msdos all_video gfxterm gfxmenu png jpeg font video_bochs video_cirrus" \
-        --modules="linux normal iso9660 biosdisk search part_gpt part_msdos all_video gfxterm gfxmenu png font" \
+        --install-modules="linux normal iso9660 biosdisk memdisk search tar ls part_gpt part_msdos all_video gfxterm gfxmenu gfxterm_background png jpeg font video_bochs video_cirrus echo sleep true" \
+        --modules="linux normal iso9660 biosdisk search part_gpt part_msdos all_video gfxterm gfxmenu gfxterm_background png font echo sleep true" \
         --locales="" --fonts="" --themes="" \
         "boot/grub/grub.cfg=$grub_embed_dir/grub.cfg" || die "grub-mkstandalone BIOS failed"
 
@@ -1014,10 +1044,11 @@ GCFG
         > "$ISO_DIR/boot/grub/bios.img"
 
     mkdir -p "$ISO_DIR/EFI/BOOT"
+    # UEFI mein bhi same modules add kiye hain
     grub-mkstandalone \
         --format=x86_64-efi \
         --output="$ISO_DIR/EFI/BOOT/BOOTx64.EFI" \
-        --install-modules="linux normal iso9660 efi_gop efi_uga all_video search part_gpt part_msdos gfxterm gfxmenu gfxterm_background png font video_bochs video_cirrus" \
+        --install-modules="linux normal iso9660 efi_gop efi_uga all_video search part_gpt part_msdos gfxterm gfxmenu gfxterm_background png font video_bochs video_cirrus echo sleep true" \
         --locales="" --fonts="" --themes="" \
         "boot/grub/grub.cfg=$grub_embed_dir/grub.cfg" || die "grub-mkstandalone UEFI failed"
 
@@ -1029,8 +1060,6 @@ GCFG
 
     ok "GRUB BIOS + UEFI images ready"
 }
-
-# ─────────────────────────────────────────────────────────────────────────────
 # 10. PXE TFTP CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 build_pxe_config() {
